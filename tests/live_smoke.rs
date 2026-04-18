@@ -1,5 +1,6 @@
 #![allow(clippy::expect_used, clippy::missing_panics_doc, clippy::unwrap_used)]
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use internetarchive_rs::{
@@ -9,14 +10,19 @@ use internetarchive_rs::{
 };
 use tempfile::tempdir;
 
+static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 fn unique_identifier(label: &str) -> ItemIdentifier {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time after epoch")
-        .as_millis();
+        .as_nanos();
+    let counter = UNIQUE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let run_id = std::env::var("GITHUB_RUN_ID").unwrap_or_else(|_| String::from("local"));
+    let run_attempt = std::env::var("GITHUB_RUN_ATTEMPT").unwrap_or_else(|_| String::from("0"));
     ItemIdentifier::new(format!(
-        "internetarchive-rs-{label}-{timestamp}-{}",
-        std::process::id()
+        "internetarchive-rs-{label}-{run_id}-{run_attempt}-{timestamp}-{counter}-{}",
+        std::process::id(),
     ))
     .expect("valid identifier")
 }
@@ -88,6 +94,44 @@ async fn wait_for_search_hit(
         tokio::time::sleep(delay).await;
         delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(10));
     }
+}
+
+async fn publish_with_fresh_identifier(
+    client: &InternetArchiveClient,
+    artifact_path: &std::path::Path,
+) -> (ItemIdentifier, internetarchive_rs::PublishOutcome) {
+    let max_attempts = 3;
+
+    for attempt in 0..max_attempts {
+        let identifier = unique_identifier("live-workflow");
+        let mut request = PublishRequest::new(
+            identifier.clone(),
+            ItemMetadata::builder()
+                .mediatype(MediaType::Texts)
+                .title(format!(
+                    "internetarchive-rs workflow {}",
+                    identifier.as_str()
+                ))
+                .description_html("<p>internetarchive-rs workflow helper test</p>")
+                .collection("opensource")
+                .language("eng")
+                .build(),
+            vec![UploadSpec::from_path(artifact_path).expect("publish artifact")],
+        );
+        request.upload_options.skip_derive = true;
+
+        match client.publish_item(request).await {
+            Ok(outcome) => {
+                assert!(outcome.created);
+                return (identifier, outcome);
+            }
+            Err(InternetArchiveError::InvalidState(message))
+                if message.contains("already exists") && attempt + 1 < max_attempts => {}
+            Err(error) => panic!("publish item: {error}"),
+        }
+    }
+
+    panic!("publish item: exhausted identifier retries");
 }
 
 #[tokio::test]
@@ -271,34 +315,13 @@ async fn live_low_level_client_api_round_trip() {
 #[ignore = "requires live Internet Archive credentials"]
 async fn live_workflow_helpers_round_trip() {
     let client = InternetArchiveClient::from_env().expect("live credentials");
-    let identifier = unique_identifier("live-workflow");
     let tempdir = tempdir().expect("tempdir");
     let artifact = tempdir.path().join("artifact.txt");
     tokio::fs::write(&artifact, "workflow artifact")
         .await
         .expect("write artifact");
 
-    let mut publish_request = PublishRequest::new(
-        identifier.clone(),
-        ItemMetadata::builder()
-            .mediatype(MediaType::Texts)
-            .title(format!(
-                "internetarchive-rs workflow {}",
-                identifier.as_str()
-            ))
-            .description_html("<p>internetarchive-rs workflow helper test</p>")
-            .collection("opensource")
-            .language("eng")
-            .build(),
-        vec![UploadSpec::from_bytes("artifact.txt", b"workflow artifact")],
-    );
-    publish_request.upload_options.skip_derive = true;
-
-    let published = client
-        .publish_item(publish_request)
-        .await
-        .expect("publish item");
-    assert!(published.created);
+    let (identifier, _) = publish_with_fresh_identifier(&client, &artifact).await;
     wait_for_item_file(
         &client,
         &identifier,
