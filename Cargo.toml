@@ -7,7 +7,7 @@ description = "Async Rust client for Internet Archive item metadata, search, upl
 license = "MIT"
 repository = "https://github.com/LucaCappelletti94/internetarchive-rs"
 readme = "README.md"
-keywords = ["internet-archive", "archive.org", "uploads", "downloads"]
+keywords = ["internet-archive", "archive-org", "uploads", "downloads"]
 categories = ["api-bindings", "multimedia"]
 
 [package.metadata.docs.rs]
