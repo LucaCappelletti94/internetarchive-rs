@@ -1,0 +1,71 @@
+name: Live Daily
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: internetarchive-live-daily
+  cancel-in-progress: false
+
+jobs:
+  feature-matrix:
+    name: Feature Matrix (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: default
+            command: cargo test --locked
+          - name: all-features
+            command: cargo test --all-features --locked
+          - name: native-tls
+            command: cargo test --no-default-features --features native-tls --locked
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: ${{ matrix.command }}
+
+  live-api-suite:
+    name: Live Full API Suite
+    runs-on: ubuntu-latest
+    needs: feature-matrix
+    timeout-minutes: 30
+    environment: internetarchive-live
+    env:
+      RUST_BACKTRACE: "1"
+      INTERNET_ARCHIVE_ACCESS_KEY: ${{ secrets.INTERNET_ARCHIVE_ACCESS_KEY }}
+      INTERNET_ARCHIVE_SECRET_KEY: ${{ secrets.INTERNET_ARCHIVE_SECRET_KEY }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Validate live credentials
+        shell: bash
+        run: |
+          test -n "$INTERNET_ARCHIVE_ACCESS_KEY" || { echo "Missing INTERNET_ARCHIVE_ACCESS_KEY secret"; exit 1; }
+          test -n "$INTERNET_ARCHIVE_SECRET_KEY" || { echo "Missing INTERNET_ARCHIVE_SECRET_KEY secret"; exit 1; }
+
+      - name: Run live full API suite
+        run: cargo test --test live_smoke --all-features --locked -- --ignored --nocapture --test-threads=1
