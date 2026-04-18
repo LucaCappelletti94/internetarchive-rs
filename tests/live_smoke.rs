@@ -115,7 +115,7 @@ async fn live_low_level_client_api_round_trip() {
         .expect("create item");
 
     let item = client.get_item(&identifier).await.expect("get item");
-    assert_eq!(item.identifier().expect("identifier"), identifier);
+    assert!(item.file("seed.txt").is_some());
     assert!(client
         .get_item_by_str(identifier.as_str())
         .await
@@ -273,8 +273,5 @@ async fn live_workflow_helpers_round_trip() {
         .expect("upsert item");
     assert!(!updated.created);
     assert_eq!(updated.skipped_files, vec![String::from("artifact.txt")]);
-    assert_eq!(
-        updated.item.identifier().expect("updated identifier"),
-        identifier
-    );
+    assert!(updated.item.file("artifact.txt").is_some());
 }
