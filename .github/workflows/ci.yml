@@ -154,6 +154,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -164,8 +166,31 @@ jobs:
       - name: Install cargo-semver-checks
         uses: taiki-e/install-action@cargo-semver-checks
 
+      - name: Select semver baseline
+        id: semver-baseline
+        shell: bash
+        run: |
+          baseline=""
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            baseline="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event_name }}" = "push" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            baseline="${{ github.event.before }}"
+          else
+            baseline="$(git rev-list --max-count=1 --skip=1 HEAD)"
+          fi
+
+          if [ -z "$baseline" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "No git baseline available; skipping semver-checks."
+            exit 0
+          fi
+
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "Using semver baseline $baseline"
+
       - name: Check semver compatibility
-        run: cargo semver-checks check-release --release-type patch
+        if: steps.semver-baseline.outputs.skip != 'true'
+        run: cargo semver-checks check-release --release-type patch --baseline-rev "${{ steps.semver-baseline.outputs.baseline }}"
 
   audit:
     name: Audit
@@ -196,7 +221,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install stable toolchain
         uses: dtolnay/rust-toolchain@stable
