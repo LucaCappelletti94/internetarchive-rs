@@ -297,7 +297,14 @@ impl InternetArchiveClient {
             });
         }
 
-        Ok(serde_json::from_slice(&bytes)?)
+        let item: Item = serde_json::from_slice(&bytes)?;
+        if item.identifier().as_ref() != Some(identifier) {
+            return Err(InternetArchiveError::ItemNotFound {
+                identifier: identifier.to_string(),
+            });
+        }
+
+        Ok(item)
     }
 
     /// Fetches a full item metadata record from a string identifier.
@@ -1229,6 +1236,23 @@ mod tests {
             "   "
         }
 
+        async fn non_item_metadata() -> Json<Value> {
+            Json(json!({
+                "error": "identifier not found",
+                "success": false
+            }))
+        }
+
+        async fn mismatched_metadata() -> Json<Value> {
+            Json(json!({
+                "files": [],
+                "metadata": {
+                    "identifier": "other-item",
+                    "title": "Wrong item"
+                }
+            }))
+        }
+
         async fn search_error() -> (StatusCode, Json<Value>) {
             (
                 StatusCode::BAD_GATEWAY,
@@ -1258,6 +1282,8 @@ mod tests {
         let app = Router::new()
             .route("/metadata/demo-item", get(metadata).post(metadata_error))
             .route("/metadata/blank-item", get(blank_metadata))
+            .route("/metadata/non-item", get(non_item_metadata))
+            .route("/metadata/mismatched-item", get(mismatched_metadata))
             .route("/advancedsearch.php", get(search_error))
             .route("/download/demo-item/missing.txt", get(download_error))
             .route("/s3/demo-item/missing-location.bin", put(missing_location))
@@ -1345,6 +1371,18 @@ mod tests {
 
         assert!(matches!(
             auth.get_item(&ItemIdentifier::new("blank-item").unwrap())
+                .await
+                .unwrap_err(),
+            InternetArchiveError::ItemNotFound { .. }
+        ));
+        assert!(matches!(
+            auth.get_item(&ItemIdentifier::new("non-item").unwrap())
+                .await
+                .unwrap_err(),
+            InternetArchiveError::ItemNotFound { .. }
+        ));
+        assert!(matches!(
+            auth.get_item(&ItemIdentifier::new("mismatched-item").unwrap())
                 .await
                 .unwrap_err(),
             InternetArchiveError::ItemNotFound { .. }
