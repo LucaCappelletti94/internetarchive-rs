@@ -3,9 +3,9 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use internetarchive_rs::{
-    Auth, DeleteOptions, DownloadTarget, FileConflictPolicy, InternetArchiveClient, ItemIdentifier,
-    ItemMetadata, MediaType, MetadataChange, MetadataTarget, PatchOperation, PollOptions,
-    PublishRequest, SearchQuery, UploadOptions, UploadSpec,
+    Auth, DeleteOptions, DownloadTarget, FileConflictPolicy, InternetArchiveClient,
+    InternetArchiveError, ItemIdentifier, ItemMetadata, MediaType, MetadataChange, MetadataTarget,
+    PatchOperation, PollOptions, PublishRequest, SearchQuery, UploadOptions, UploadSpec,
 };
 use tempfile::tempdir;
 
@@ -23,6 +23,71 @@ fn unique_identifier(label: &str) -> ItemIdentifier {
 
 fn live_credentials() -> Auth {
     Auth::from_env().expect("live credentials")
+}
+
+async fn wait_for_item_file(
+    client: &InternetArchiveClient,
+    identifier: &ItemIdentifier,
+    filename: &str,
+    max_wait: Duration,
+) {
+    let started = tokio::time::Instant::now();
+    let mut delay = Duration::from_secs(1);
+
+    loop {
+        match client.get_item(identifier).await {
+            Ok(item) if item.file(filename).is_some() => return,
+            Ok(_) | Err(InternetArchiveError::ItemNotFound { .. }) => {}
+            Err(error) => panic!("failed while waiting for file visibility: {error}"),
+        }
+
+        assert!(
+            started.elapsed() < max_wait,
+            "timed out waiting for {filename} to become visible on {identifier}"
+        );
+        tokio::time::sleep(delay).await;
+        delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(10));
+    }
+}
+
+async fn wait_for_search_hit(
+    client: &InternetArchiveClient,
+    identifier: &ItemIdentifier,
+    max_wait: Duration,
+) {
+    let started = tokio::time::Instant::now();
+    let mut delay = Duration::from_secs(1);
+
+    loop {
+        let query = SearchQuery::builder(format!("identifier:{}", identifier.as_str()))
+            .field("identifier")
+            .field("title")
+            .rows(5)
+            .sort("publicdate", internetarchive_rs::SortDirection::Desc)
+            .build();
+
+        match client.search(&query).await {
+            Ok(search)
+                if search
+                    .response
+                    .docs
+                    .iter()
+                    .any(|document| document.identifier().as_ref() == Some(identifier)) =>
+            {
+                return;
+            }
+            Ok(_) => {}
+            Err(InternetArchiveError::Http { status, .. }) if status.is_server_error() => {}
+            Err(error) => panic!("failed while waiting for search visibility: {error}"),
+        }
+
+        assert!(
+            started.elapsed() < max_wait,
+            "timed out waiting for {identifier} to appear in search"
+        );
+        tokio::time::sleep(delay).await;
+        delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(10));
+    }
 }
 
 #[tokio::test]
@@ -114,8 +179,7 @@ async fn live_low_level_client_api_round_trip() {
         .await
         .expect("create item");
 
-    let item = client.get_item(&identifier).await.expect("get item");
-    assert!(item.file("seed.txt").is_some());
+    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
     assert!(client
         .get_item_by_str(identifier.as_str())
         .await
@@ -123,23 +187,7 @@ async fn live_low_level_client_api_round_trip() {
         .file("seed.txt")
         .is_some());
 
-    let search = client
-        .search(
-            &SearchQuery::builder(format!("identifier:{}", identifier.as_str()))
-                .field("identifier")
-                .field("title")
-                .rows(5)
-                .sort("publicdate", internetarchive_rs::SortDirection::Desc)
-                .build(),
-        )
-        .await
-        .expect("search item");
-    assert_eq!(
-        search.response.docs[0]
-            .identifier()
-            .expect("search identifier"),
-        identifier
-    );
+    wait_for_search_hit(&client, &identifier, Duration::from_secs(180)).await;
 
     client
         .apply_metadata_patch(
@@ -187,6 +235,7 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("upload extra file");
+    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(120)).await;
 
     let resolved = client
         .resolve_download(&identifier, "seed.txt")
@@ -250,7 +299,13 @@ async fn live_workflow_helpers_round_trip() {
         .await
         .expect("publish item");
     assert!(published.created);
-    assert!(published.item.file("artifact.txt").is_some());
+    wait_for_item_file(
+        &client,
+        &identifier,
+        "artifact.txt",
+        Duration::from_secs(120),
+    )
+    .await;
 
     let mut upsert_request = PublishRequest::new(
         identifier.clone(),
@@ -273,5 +328,11 @@ async fn live_workflow_helpers_round_trip() {
         .expect("upsert item");
     assert!(!updated.created);
     assert_eq!(updated.skipped_files, vec![String::from("artifact.txt")]);
-    assert!(updated.item.file("artifact.txt").is_some());
+    wait_for_item_file(
+        &client,
+        &identifier,
+        "artifact.txt",
+        Duration::from_secs(120),
+    )
+    .await;
 }
