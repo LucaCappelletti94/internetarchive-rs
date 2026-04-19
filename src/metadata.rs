@@ -215,6 +215,25 @@ pub(crate) fn metadata_contains_projection(actual: &ItemMetadata, expected: &Ite
     })
 }
 
+pub(crate) fn merge_metadata_semantically(
+    current: &ItemMetadata,
+    updates: &ItemMetadata,
+) -> ItemMetadata {
+    let mut merged = current.as_map().clone();
+    for (key, update_value) in updates.as_map() {
+        if merged
+            .get(key)
+            .is_some_and(|current_value| metadata_values_match(current_value, update_value))
+        {
+            continue;
+        }
+
+        merged.insert(key.clone(), update_value.clone());
+    }
+
+    ItemMetadata::from(merged)
+}
+
 impl From<BTreeMap<String, Value>> for ItemMetadata {
     fn from(value: BTreeMap<String, Value>) -> Self {
         Self(value)

@@ -18,8 +18,8 @@ use crate::endpoint::Endpoint;
 use crate::error::{decode_metadata_write_failure, InternetArchiveError};
 use crate::ids::SecretPair;
 use crate::metadata::{
-    metadata_contains_projection, HeaderEncoding, ItemMetadata, MetadataChange, MetadataTarget,
-    PatchOperation,
+    merge_metadata_semantically, metadata_contains_projection, HeaderEncoding, ItemMetadata,
+    MetadataChange, MetadataTarget, PatchOperation,
 };
 use crate::model::{Item, MetadataWriteResponse, S3LimitCheck, SearchResponse};
 use crate::poll::PollOptions;
@@ -430,11 +430,8 @@ impl InternetArchiveClient {
     ) -> Result<MetadataWriteResponse, InternetArchiveError> {
         let current = self.get_item(identifier).await?;
         let current_value = serde_json::to_value(&current.metadata)?;
-        let mut merged = current.metadata.into_map();
-        for (key, value) in metadata.as_map() {
-            merged.insert(key.clone(), value.clone());
-        }
-        let desired_value = serde_json::to_value(ItemMetadata::from(merged))?;
+        let desired_value =
+            serde_json::to_value(merge_metadata_semantically(&current.metadata, metadata))?;
         let patch_value = json_patch::diff(&current_value, &desired_value);
         let patch: Vec<PatchOperation> =
             serde_json::from_value(serde_json::to_value(patch_value)?)?;
@@ -589,30 +586,21 @@ impl InternetArchiveClient {
         expected_files: &[String],
         expected_metadata: &ItemMetadata,
     ) -> Result<Item, InternetArchiveError> {
-        let started = tokio::time::Instant::now();
-        let mut delay = self.poll.initial_delay;
-
-        loop {
-            match self.get_item(identifier).await {
+        self.wait_until("item projection visibility", || async {
+            let item = self.get_item(identifier).await?;
+            if expected_files
+                .iter()
+                .all(|filename| item.file(filename).is_some())
+                && metadata_contains_projection(&item.metadata, expected_metadata)
+            {
                 Ok(item)
-                    if expected_files
-                        .iter()
-                        .all(|filename| item.file(filename).is_some())
-                        && metadata_contains_projection(&item.metadata, expected_metadata) =>
-                {
-                    return Ok(item);
-                }
-                Ok(_) | Err(InternetArchiveError::ItemNotFound { .. }) => {}
-                Err(error) => return Err(error),
+            } else {
+                Err(InternetArchiveError::ItemNotFound {
+                    identifier: identifier.to_string(),
+                })
             }
-
-            if started.elapsed() >= self.poll.max_wait {
-                return Err(InternetArchiveError::Timeout("item projection visibility"));
-            }
-
-            tokio::time::sleep(delay).await;
-            delay = std::cmp::min(delay.saturating_mul(2), self.poll.max_delay);
-        }
+        })
+        .await
     }
 
     async fn put_object(
@@ -790,7 +778,13 @@ impl InternetArchiveClient {
                         "redirect location is not valid UTF-8".to_owned(),
                     )
                 })?;
-                current_url = current_url.join(location)?;
+                let redirected_url = current_url.join(location)?;
+                if redirected_url.origin() != self.endpoint.s3_base().origin() {
+                    return Err(InternetArchiveError::InvalidState(
+                        "refusing to forward credentials to redirected S3 host".to_owned(),
+                    ));
+                }
+                current_url = redirected_url;
                 remaining_redirects -= 1;
                 continue;
             }
@@ -818,8 +812,9 @@ impl InternetArchiveClient {
         loop {
             match action().await {
                 Ok(value) => return Ok(value),
-                Err(InternetArchiveError::ItemNotFound { .. })
-                    if started.elapsed() < self.poll.max_wait =>
+                Err(error)
+                    if started.elapsed() < self.poll.max_wait
+                        && is_retryable_wait_error(&error) =>
                 {
                     tokio::time::sleep(delay).await;
                     delay = std::cmp::min(delay.saturating_mul(2), self.poll.max_delay);
@@ -871,6 +866,14 @@ fn is_redirect(status: StatusCode) -> bool {
             | StatusCode::TEMPORARY_REDIRECT
             | StatusCode::PERMANENT_REDIRECT
     )
+}
+
+fn is_retryable_wait_error(error: &InternetArchiveError) -> bool {
+    match error {
+        InternetArchiveError::ItemNotFound { .. } => true,
+        InternetArchiveError::Http { status, .. } if status.is_server_error() => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1106,6 +1109,76 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn s3_redirects_do_not_forward_credentials_to_foreign_hosts() {
+        async fn initial_upload_redirect() -> (StatusCode, HeaderMap) {
+            let trap = TRAP_BASE_URL.get().expect("trap base url");
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                LOCATION,
+                HeaderValue::from_str(&format!("{trap}stolen/demo-item/demo.txt")).unwrap(),
+            );
+            (StatusCode::TEMPORARY_REDIRECT, headers)
+        }
+
+        async fn trap_handler(
+            State(state): State<std::sync::Arc<StateData>>,
+            headers: HeaderMap,
+        ) -> StatusCode {
+            state.seen_upload_auth.lock().await.push(
+                headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or("")
+                    .to_owned(),
+            );
+            StatusCode::OK
+        }
+
+        static TRAP_BASE_URL: OnceLock<String> = OnceLock::new();
+
+        let trap_state = std::sync::Arc::new(StateData::default());
+        let trap_app = Router::new()
+            .route("/stolen/demo-item/demo.txt", put(trap_handler))
+            .with_state(trap_state.clone());
+        let trap_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let trap_addr = trap_listener.local_addr().unwrap();
+        let trap_server =
+            tokio::spawn(async move { axum::serve(trap_listener, trap_app).await.unwrap() });
+        TRAP_BASE_URL
+            .set(format!("http://{trap_addr}/"))
+            .expect("set trap base url once");
+
+        let origin_state = std::sync::Arc::new(StateData::default());
+        let origin_app = Router::new()
+            .route("/s3/demo-item/demo.txt", put(initial_upload_redirect))
+            .with_state(origin_state);
+        let origin_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin_addr = origin_listener.local_addr().unwrap();
+        let origin_server =
+            tokio::spawn(async move { axum::serve(origin_listener, origin_app).await.unwrap() });
+
+        let client = test_client(origin_addr);
+        let error = client
+            .upload_file(
+                &ItemIdentifier::new("demo-item").unwrap(),
+                &UploadSpec::from_bytes("demo.txt", b"hello"),
+                &UploadOptions::default(),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            InternetArchiveError::InvalidState(message)
+                if message.contains("redirected S3 host")
+        ));
+        assert!(trap_state.seen_upload_auth.lock().await.is_empty());
+
+        origin_server.abort();
+        trap_server.abort();
+    }
+
     #[test]
     fn auth_debug_is_redacted_and_env_helpers_work() {
         let auth = Auth::new("access", "secret");
@@ -1119,7 +1192,8 @@ mod tests {
                 "files": [],
                 "metadata": {
                     "identifier": "demo-item",
-                    "title": "Demo item"
+                    "title": "Demo item",
+                    "collection": ["opensource"]
                 }
             }))
         }
@@ -1140,7 +1214,10 @@ mod tests {
         let response = client
             .update_item_metadata(
                 &ItemIdentifier::new("demo-item").unwrap(),
-                &ItemMetadata::builder().title("Demo item").build(),
+                &ItemMetadata::builder()
+                    .title("Demo item")
+                    .collection("opensource")
+                    .build(),
             )
             .await
             .unwrap();
@@ -1227,6 +1304,27 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(value, "ready");
+
+            let mut transient_attempts = 0_u8;
+            let recovered = client
+                .wait_until("demo transient", || {
+                    transient_attempts += 1;
+                    async move {
+                        if transient_attempts < 3 {
+                            Err(InternetArchiveError::Http {
+                                status: StatusCode::BAD_GATEWAY,
+                                code: None,
+                                message: Some("temporary outage".to_owned()),
+                                raw_body: None,
+                            })
+                        } else {
+                            Ok("recovered")
+                        }
+                    }
+                })
+                .await
+                .unwrap();
+            assert_eq!(recovered, "recovered");
 
             let error = client
                 .wait_until("demo error", || async {

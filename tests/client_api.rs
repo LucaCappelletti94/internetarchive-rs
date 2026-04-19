@@ -699,6 +699,66 @@ async fn workflow_outcome_waits_for_metadata_visibility() {
 }
 
 #[tokio::test]
+async fn workflow_projection_wait_retries_transient_server_errors() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "Old title"}
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "Old title"}
+        }),
+    );
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 302,
+            "log": "https://catalogd.archive.org/log/302"
+        }),
+    );
+    server.enqueue(
+        Method::GET,
+        "/metadata/demo-item",
+        QueuedResponse::text(StatusCode::BAD_GATEWAY, "temporary outage"),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "New title"}
+        }),
+    );
+
+    let mut request = internetarchive_rs::PublishRequest::new(
+        identifier,
+        ItemMetadata::builder().title("New title").build(),
+        vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+    );
+    request.conflict_policy = FileConflictPolicy::Skip;
+
+    let outcome = client.upsert_item(request).await.unwrap();
+    assert_eq!(outcome.item.metadata.title(), Some("New title"));
+}
+
+#[tokio::test]
 async fn workflow_default_overwrite_and_multi_upload_creation_paths_are_covered() {
     let server = MockInternetArchiveServer::start().await;
     let client = server.client();
