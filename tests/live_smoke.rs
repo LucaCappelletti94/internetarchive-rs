@@ -6,8 +6,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use internetarchive_rs::{
     Auth, DeleteOptions, DownloadTarget, Endpoint, FileConflictPolicy, InternetArchiveClient,
     InternetArchiveError, ItemIdentifier, ItemMetadata, MediaType, MetadataChange, MetadataTarget,
-    PatchOperation, PollOptions, PublishRequest, SearchQuery, SearchSort, SortDirection,
-    UploadOptions, UploadSpec,
+    PatchOperation, PollOptions, PublishRequest, SearchQuery, SearchResponse, SearchSort,
+    SortDirection, UploadOptions, UploadSpec,
 };
 use tempfile::tempdir;
 
@@ -61,7 +61,7 @@ async fn wait_for_search_hit(
     client: &InternetArchiveClient,
     identifier: &ItemIdentifier,
     max_wait: Duration,
-) {
+) -> SearchResponse {
     let started = tokio::time::Instant::now();
     let mut delay = Duration::from_secs(1);
 
@@ -81,10 +81,11 @@ async fn wait_for_search_hit(
                     .iter()
                     .any(|document| document.identifier().as_ref() == Some(identifier)) =>
             {
-                return;
+                return search;
             }
             Ok(_) => {}
             Err(InternetArchiveError::Http { status, .. }) if status.is_server_error() => {}
+            Err(InternetArchiveError::InvalidState(_)) => {}
             Err(error) => panic!("failed while waiting for search visibility: {error}"),
         }
 
@@ -306,11 +307,7 @@ async fn live_low_level_client_api_round_trip() {
         .file("seed.txt")
         .is_some());
 
-    wait_for_search_hit(&client, &identifier, Duration::from_secs(180)).await;
-    let search = client
-        .search(&search_query)
-        .await
-        .expect("search created item");
+    let search = wait_for_search_hit(&client, &identifier, Duration::from_secs(180)).await;
     assert!(search
         .response
         .docs

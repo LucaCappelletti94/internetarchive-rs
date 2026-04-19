@@ -9,6 +9,7 @@ use reqwest::header::{
 };
 use reqwest::{Method, StatusCode};
 use secrecy::{ExposeSecret, SecretString};
+use serde_json::Value;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 use url::Url;
@@ -332,11 +333,17 @@ impl InternetArchiveClient {
         query: &SearchQuery,
     ) -> Result<SearchResponse, InternetArchiveError> {
         let url = query.into_url(self.endpoint.search_url()?)?;
-        self.execute_json(
-            self.archive_request(Method::GET, url)
-                .header(ACCEPT, "application/json"),
-        )
-        .await
+        let response = self
+            .archive_request(Method::GET, url)
+            .header(ACCEPT, "application/json")
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(InternetArchiveError::from_response(response).await);
+        }
+
+        let bytes = response.bytes().await?;
+        decode_search_response(&bytes)
     }
 
     /// Checks whether the S3 queue is currently over its documented upload limit.
@@ -876,6 +883,34 @@ fn is_retryable_wait_error(error: &InternetArchiveError) -> bool {
     }
 }
 
+fn decode_search_response(bytes: &[u8]) -> Result<SearchResponse, InternetArchiveError> {
+    let value: Value = serde_json::from_slice(bytes)?;
+
+    if value.get("response").is_some() {
+        return Ok(serde_json::from_value(value)?);
+    }
+
+    let message = value
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("message").and_then(Value::as_str))
+        .or_else(|| value.get("title").and_then(Value::as_str))
+        .map_or_else(
+            || {
+            String::from_utf8_lossy(bytes)
+                .trim()
+                .chars()
+                .take(512)
+                .collect()
+            },
+            str::to_owned,
+        );
+
+    Err(InternetArchiveError::InvalidState(format!(
+        "unexpected search response: {message}"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::OnceLock;
@@ -1105,6 +1140,32 @@ mod tests {
         assert_eq!(state.seen_upload_auth.lock().await[0], "LOW access:secret");
         assert_eq!(state.seen_delete_auth.lock().await[0], "LOW access:secret");
         assert!(state.captured_mdapi_body.lock().await[0].contains("-target=metadata"));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn search_reports_non_search_json_payloads_as_invalid_state() {
+        async fn advanced_search_error() -> Json<Value> {
+            Json(json!({
+                "message": "search backend warming up"
+            }))
+        }
+
+        let app = Router::new().route("/advancedsearch.php", get(advanced_search_error));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = unauthenticated_test_client(addr);
+
+        let error = client
+            .search(&SearchQuery::builder("identifier:demo-item").build())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, InternetArchiveError::InvalidState(message) if message.contains("search backend warming up"))
+        );
 
         server.abort();
     }
