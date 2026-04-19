@@ -897,11 +897,11 @@ fn decode_search_response(bytes: &[u8]) -> Result<SearchResponse, InternetArchiv
         .or_else(|| value.get("title").and_then(Value::as_str))
         .map_or_else(
             || {
-            String::from_utf8_lossy(bytes)
-                .trim()
-                .chars()
-                .take(512)
-                .collect()
+                String::from_utf8_lossy(bytes)
+                    .trim()
+                    .chars()
+                    .take(512)
+                    .collect()
             },
             str::to_owned,
         );
@@ -1171,6 +1171,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn search_uses_trimmed_raw_json_when_no_message_fields_are_present() {
+        async fn advanced_search_error() -> Json<Value> {
+            Json(json!({
+                "foo": "bar"
+            }))
+        }
+
+        let app = Router::new().route("/advancedsearch.php", get(advanced_search_error));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = unauthenticated_test_client(addr);
+
+        let error = client
+            .search(&SearchQuery::builder("identifier:demo-item").build())
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, InternetArchiveError::InvalidState(message) if message.contains("\"foo\":\"bar\""))
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn s3_redirects_do_not_forward_credentials_to_foreign_hosts() {
         async fn initial_upload_redirect() -> (StatusCode, HeaderMap) {
             let trap = TRAP_BASE_URL.get().expect("trap base url");
@@ -1319,7 +1345,7 @@ mod tests {
         ));
 
         let poll = PollOptions {
-            max_wait: Duration::from_millis(15),
+            max_wait: Duration::from_millis(100),
             initial_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(2),
         };

@@ -227,3 +227,101 @@ async fn upsert_item_skip_policy_skips_existing_uploads_and_updates_metadata() {
     let body = String::from_utf8(patch.body.clone()).unwrap();
     assert!(body.contains("New+title") || body.contains("New%20title"));
 }
+
+#[tokio::test]
+async fn upsert_item_creates_missing_items_and_backfills_stale_metadata_projection() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue(
+        Method::GET,
+        "/metadata/demo-item",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![("content-type".into(), "application/json".into())],
+            b"[]".to_vec(),
+        ),
+    );
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/demo.txt",
+        QueuedResponse::bytes(
+            StatusCode::TEMPORARY_REDIRECT,
+            vec![("location".into(), "/s3-direct/demo-item/demo.txt".into())],
+            Vec::new(),
+        ),
+    );
+    server.enqueue(
+        Method::PUT,
+        "/s3-direct/demo-item/demo.txt",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item"
+            }
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item"
+            }
+        }),
+    );
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 99,
+            "log": "https://catalogd.archive.org/log/99"
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item",
+                "title": "Backfilled title"
+            }
+        }),
+    );
+
+    let outcome = client
+        .upsert_item(PublishRequest::new(
+            identifier.clone(),
+            ItemMetadata::builder().title("Backfilled title").build(),
+            vec![UploadSpec::from_bytes("demo.txt", b"hello".to_vec())],
+        ))
+        .await
+        .unwrap();
+
+    assert!(outcome.created);
+    assert!(outcome.metadata_changed);
+    assert_eq!(outcome.uploaded_files, vec!["demo.txt".to_owned()]);
+    assert_eq!(outcome.item.identifier().unwrap(), identifier);
+    assert_eq!(outcome.item.metadata.title(), Some("Backfilled title"));
+
+    let requests = server.requests();
+    let patch = requests
+        .iter()
+        .find(|request| request.method == Method::POST && request.path == "/metadata/demo-item")
+        .unwrap();
+    let body = String::from_utf8(patch.body.clone()).unwrap();
+    assert!(body.contains("Backfilled+title") || body.contains("Backfilled%20title"));
+}
