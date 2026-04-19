@@ -121,9 +121,10 @@ pub struct MetadataWriteResponse {
 }
 
 /// Echo block returned by `advancedsearch.php`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchResponseHeader {
     /// Status code reported by the search service.
+    #[serde(default)]
     pub status: i64,
     /// Query time in milliseconds, when present.
     #[serde(default)]
@@ -151,6 +152,7 @@ pub struct SearchResultPage {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SearchResponse {
     /// Header and echoed parameters.
+    #[serde(default)]
     #[serde(rename = "responseHeader")]
     pub response_header: SearchResponseHeader,
     /// Main result page.
@@ -264,6 +266,30 @@ mod tests {
         assert_eq!(
             response.response.docs[0].as_map()["title"],
             serde_json::Value::String("XFETCH".to_owned())
+        );
+    }
+
+    #[test]
+    fn search_response_deserializes_without_response_header() {
+        let response: SearchResponse = serde_json::from_value(serde_json::json!({
+            "response": {
+                "numFound": 1,
+                "start": 0,
+                "docs": [
+                    {
+                        "identifier": "xfetch",
+                        "title": "XFETCH"
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(response.response_header.status, 0);
+        assert!(response.response_header.params.is_empty());
+        assert_eq!(
+            response.response.docs[0].identifier().unwrap().as_str(),
+            "xfetch"
         );
     }
 }

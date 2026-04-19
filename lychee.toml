@@ -1,0 +1,9 @@
+# These Internet Archive pages are live and useful source URLs, but they are
+# not stable for automated bot-style link checking: the Zendesk pages can return
+# 403 to link checkers and archive.org/stats can time out. Keep them clickable
+# in the README and skip only these exact endpoints in lychee.
+exclude = [
+  "^https://archivesupport\\.zendesk\\.com/hc/en-us/articles/360014755952-Archive-org-Information/?$",
+  "^https://archivesupport\\.zendesk\\.com/hc/en-us/articles/360004650632-Internet-Archive-Statistics/?$",
+  "^https://archive\\.org/stats/?$",
+]
