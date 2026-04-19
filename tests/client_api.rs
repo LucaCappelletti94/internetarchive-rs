@@ -4,8 +4,9 @@ mod mock_support;
 
 use axum::http::{Method, StatusCode};
 use internetarchive_rs::{
-    DeleteOptions, FileConflictPolicy, ItemIdentifier, ItemMetadata, MediaType, MetadataChange,
-    MetadataTarget, PatchOperation, SearchQuery, UploadOptions, UploadSpec,
+    DeleteOptions, DownloadTarget, Endpoint, FileConflictPolicy, ItemIdentifier, ItemMetadata,
+    MediaType, MetadataChange, MetadataTarget, MetadataValue, PatchOperation, SearchQuery,
+    SearchSort, SortDirection, TaskId, UploadOptions, UploadSpec,
 };
 use mock_support::{MockInternetArchiveServer, QueuedResponse};
 
@@ -877,4 +878,153 @@ async fn workflow_default_overwrite_and_multi_upload_creation_paths_are_covered(
         created_outcome.uploaded_files,
         vec![String::from("first.txt"), String::from("second.txt")]
     );
+}
+
+#[test]
+fn public_helper_apis_cover_remaining_daily_surface() {
+    let default_endpoint = Endpoint::default();
+    assert_eq!(
+        default_endpoint.archive_base().as_str(),
+        "https://archive.org/"
+    );
+    assert_eq!(
+        default_endpoint.s3_base().as_str(),
+        "https://s3.us.archive.org/"
+    );
+
+    let custom_endpoint = Endpoint::custom(
+        url::Url::parse("https://archive.org/root").unwrap(),
+        url::Url::parse("https://s3.us.archive.org/custom").unwrap(),
+    );
+    assert_eq!(
+        custom_endpoint.metadata_url("demo-item").unwrap().as_str(),
+        "https://archive.org/root/metadata/demo-item"
+    );
+    assert_eq!(
+        custom_endpoint.search_url().unwrap().as_str(),
+        "https://archive.org/root/advancedsearch.php"
+    );
+    assert_eq!(
+        custom_endpoint.details_url("demo-item").unwrap().as_str(),
+        "https://archive.org/root/details/demo-item"
+    );
+    assert_eq!(
+        custom_endpoint
+            .download_url("demo-item", "demo.txt")
+            .unwrap()
+            .as_str(),
+        "https://archive.org/root/download/demo-item/demo.txt"
+    );
+    assert_eq!(
+        custom_endpoint.s3_item_url("demo-item").unwrap().as_str(),
+        "https://s3.us.archive.org/custom/demo-item"
+    );
+    assert_eq!(
+        custom_endpoint
+            .s3_object_url("demo-item", "demo.txt")
+            .unwrap()
+            .as_str(),
+        "https://s3.us.archive.org/custom/demo-item/demo.txt"
+    );
+    let limit_url = custom_endpoint
+        .s3_limit_check_url("demo-access", "demo-item")
+        .unwrap();
+    assert!(limit_url.as_str().contains("check_limit=1"));
+    assert!(limit_url.as_str().contains("accesskey=demo-access"));
+    assert!(limit_url.as_str().contains("bucket=demo-item"));
+
+    let client = internetarchive_rs::InternetArchiveClient::builder()
+        .endpoint(custom_endpoint.clone())
+        .build()
+        .unwrap();
+    assert_eq!(client.endpoint(), &custom_endpoint);
+
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+    let resolved = client.resolve_download(&identifier, "demo.txt").unwrap();
+    assert_eq!(resolved.identifier, identifier);
+    assert_eq!(resolved.filename, "demo.txt");
+    assert_eq!(
+        resolved.url.as_str(),
+        "https://archive.org/root/download/demo-item/demo.txt"
+    );
+
+    let raw_query = SearchQuery::new("identifier:demo-item");
+    assert_eq!(raw_query.query(), "identifier:demo-item");
+    assert!(raw_query.fields().is_empty());
+
+    let identifier_query = SearchQuery::identifier("demo-item");
+    assert_eq!(identifier_query.query(), "identifier:demo-item");
+    let sort = SearchSort::new("publicdate", SortDirection::Desc);
+    assert_eq!(sort.field, "publicdate");
+    assert_eq!(sort.direction, SortDirection::Desc);
+    let query = SearchQuery::builder(identifier_query.query())
+        .field("identifier")
+        .field("title")
+        .rows(5)
+        .page(2)
+        .sort(sort.field.clone(), sort.direction)
+        .extra_param("mediatype", "texts")
+        .build();
+    assert_eq!(
+        query.fields(),
+        &["identifier".to_owned(), "title".to_owned()]
+    );
+    let search_url = query
+        .into_url(default_endpoint.search_url().unwrap())
+        .unwrap();
+    assert!(search_url.as_str().contains("q=identifier%3Ademo-item"));
+    assert!(search_url.as_str().contains("rows=5"));
+    assert!(search_url.as_str().contains("page=2"));
+    assert!(search_url.as_str().contains("sort%5B%5D=publicdate+desc"));
+    assert!(search_url.as_str().contains("mediatype=texts"));
+
+    let file_change = MetadataChange::new(
+        &MetadataTarget::File(String::from("demo.txt")),
+        vec![PatchOperation::replace("/description", "Demo file")],
+    );
+    assert_eq!(file_change.target, "files/demo.txt");
+    let user_json_change = MetadataChange::new(
+        &MetadataTarget::UserJson(String::from("extra.json")),
+        vec![
+            PatchOperation::test("/version", 1),
+            PatchOperation::add("/tags/-", "rust"),
+            PatchOperation::Remove {
+                path: String::from("/obsolete"),
+            },
+            PatchOperation::RemoveFirst {
+                path: String::from("/tags/-"),
+                value: serde_json::json!("legacy"),
+            },
+            PatchOperation::RemoveAll {
+                path: String::from("/tags/-"),
+                value: serde_json::json!("dup"),
+            },
+        ],
+    );
+    let root_change = MetadataChange::new(
+        &MetadataTarget::RootUserJson,
+        vec![PatchOperation::add("/alive", true)],
+    );
+    assert_eq!(root_change.target, "");
+    let serialized_change = serde_json::to_string(&user_json_change).unwrap();
+    assert!(serialized_change.contains("extra.json"));
+    assert!(serialized_change.contains("\"remove-first\""));
+    assert!(serialized_change.contains("\"remove-all\""));
+
+    assert_eq!(
+        MetadataValue::from(String::from("demo")),
+        MetadataValue::Text(String::from("demo"))
+    );
+    assert_eq!(
+        MetadataValue::from(vec!["a", "b"]),
+        MetadataValue::TextList(vec![String::from("a"), String::from("b")])
+    );
+
+    let bytes_target = DownloadTarget::Bytes;
+    let path_target = DownloadTarget::Path(std::path::PathBuf::from("/tmp/demo.txt"));
+    assert!(matches!(bytes_target, DownloadTarget::Bytes));
+    assert!(matches!(path_target, DownloadTarget::Path(_)));
+
+    let task_id = TaskId::from(7_u64);
+    assert_eq!(task_id.to_string(), "7");
 }

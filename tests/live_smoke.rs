@@ -4,9 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use internetarchive_rs::{
-    Auth, DeleteOptions, DownloadTarget, FileConflictPolicy, InternetArchiveClient,
+    Auth, DeleteOptions, DownloadTarget, Endpoint, FileConflictPolicy, InternetArchiveClient,
     InternetArchiveError, ItemIdentifier, ItemMetadata, MediaType, MetadataChange, MetadataTarget,
-    PatchOperation, PollOptions, PublishRequest, SearchQuery, UploadOptions, UploadSpec,
+    PatchOperation, PollOptions, PublishRequest, SearchQuery, SearchSort, SortDirection,
+    UploadOptions, UploadSpec,
 };
 use tempfile::tempdir;
 
@@ -157,8 +158,14 @@ async fn live_low_level_client_api_round_trip() {
         initial_delay: Duration::from_millis(500),
         max_delay: Duration::from_secs(5),
     };
+    let default_endpoint = Endpoint::default();
+    let endpoint = Endpoint::custom(
+        default_endpoint.archive_base().clone(),
+        default_endpoint.s3_base().clone(),
+    );
     let client = InternetArchiveClient::builder()
         .auth(auth.clone())
+        .endpoint(endpoint.clone())
         .user_agent("internetarchive-rs/live-daily")
         .request_timeout(Duration::from_secs(120))
         .connect_timeout(Duration::from_secs(30))
@@ -173,9 +180,12 @@ async fn live_low_level_client_api_round_trip() {
     assert!(env_client.has_auth());
     assert!(with_auth_client.has_auth());
     assert!(!unauthenticated_client.has_auth());
+    assert_eq!(client.endpoint(), &endpoint);
     assert_eq!(client.poll_options(), &poll);
     assert_eq!(client.request_timeout(), Some(Duration::from_secs(120)));
     assert_eq!(client.connect_timeout(), Some(Duration::from_secs(30)));
+    assert_eq!(client.endpoint().archive_base(), endpoint.archive_base());
+    assert_eq!(client.endpoint().s3_base(), endpoint.s3_base());
     assert!(client
         .endpoint()
         .details_url("xfetch")
@@ -184,6 +194,67 @@ async fn live_low_level_client_api_round_trip() {
         .ends_with("/details/xfetch"));
 
     let identifier = unique_identifier("live-api");
+    assert!(client
+        .endpoint()
+        .metadata_url(identifier.as_str())
+        .expect("metadata url")
+        .as_str()
+        .ends_with(&format!("/metadata/{}", identifier.as_str())));
+    assert!(client
+        .endpoint()
+        .search_url()
+        .expect("search url")
+        .as_str()
+        .ends_with("/advancedsearch.php"));
+    assert!(client
+        .endpoint()
+        .download_url(identifier.as_str(), "seed.txt")
+        .expect("download url")
+        .as_str()
+        .ends_with(&format!("/download/{}/seed.txt", identifier.as_str())));
+    assert!(client
+        .endpoint()
+        .s3_item_url(identifier.as_str())
+        .expect("s3 item url")
+        .as_str()
+        .ends_with(identifier.as_str()));
+    assert!(client
+        .endpoint()
+        .s3_object_url(identifier.as_str(), "seed.txt")
+        .expect("s3 object url")
+        .as_str()
+        .ends_with(&format!("{}/seed.txt", identifier.as_str())));
+    assert!(client
+        .endpoint()
+        .s3_limit_check_url("demo-access", identifier.as_str())
+        .expect("s3 limit url")
+        .as_str()
+        .contains(&format!("bucket={}", identifier.as_str())));
+
+    let identifier_query = SearchQuery::identifier(identifier.as_str());
+    assert_eq!(
+        identifier_query.query(),
+        format!("identifier:{}", identifier.as_str())
+    );
+    assert!(identifier_query.fields().is_empty());
+    let search_sort = SearchSort::new("publicdate", SortDirection::Desc);
+    assert_eq!(search_sort.field, "publicdate");
+    assert_eq!(search_sort.direction, SortDirection::Desc);
+    let search_query = SearchQuery::builder(identifier_query.query())
+        .field("identifier")
+        .field("title")
+        .rows(5)
+        .page(1)
+        .sort(search_sort.field.clone(), search_sort.direction)
+        .extra_param("mediatype", "texts")
+        .build();
+    let search_url = search_query
+        .into_url(client.endpoint().search_url().expect("search endpoint"))
+        .expect("encoded search url");
+    assert!(search_url.as_str().contains("page=1"));
+    assert!(search_url.as_str().contains("mediatype=texts"));
+    assert!(search_url.as_str().contains("sort%5B%5D=publicdate+desc"));
+
     let tempdir = tempdir().expect("tempdir");
     let seed_path = tempdir.path().join("seed.txt");
     let extra_path = tempdir.path().join("extra.txt");
@@ -236,6 +307,15 @@ async fn live_low_level_client_api_round_trip() {
         .is_some());
 
     wait_for_search_hit(&client, &identifier, Duration::from_secs(180)).await;
+    let search = client
+        .search(&search_query)
+        .await
+        .expect("search created item");
+    assert!(search
+        .response
+        .docs
+        .iter()
+        .any(|document| document.identifier().as_ref() == Some(&identifier)));
 
     client
         .apply_metadata_patch(
@@ -271,7 +351,8 @@ async fn live_low_level_client_api_round_trip() {
     let upload_options = UploadOptions {
         skip_derive: true,
         keep_old_version: true,
-        ..UploadOptions::default()
+        interactive_priority: true,
+        size_hint: Some(12_345),
     };
     client
         .upload_file(
@@ -289,6 +370,7 @@ async fn live_low_level_client_api_round_trip() {
         .resolve_download(&identifier, "seed.txt")
         .expect("resolved download");
     assert_eq!(resolved.identifier, identifier);
+    assert_eq!(resolved.filename, "seed.txt");
     let _memory_target = DownloadTarget::Bytes;
     let downloaded_path = tempdir.path().join("downloaded.txt");
     let _path_target = DownloadTarget::Path(downloaded_path.clone());
@@ -310,9 +392,37 @@ async fn live_low_level_client_api_round_trip() {
     );
 
     client
-        .delete_file(&identifier, "extra.txt", &DeleteOptions::default())
+        .upload_file(
+            &identifier,
+            &UploadSpec::from_bytes("bytes.txt", b"bytes artifact".to_vec())
+                .with_content_type(mime::TEXT_PLAIN),
+            &UploadOptions {
+                skip_derive: true,
+                ..UploadOptions::default()
+            },
+        )
         .await
-        .expect("delete extra file");
+        .expect("upload bytes file");
+    wait_for_item_file(&client, &identifier, "bytes.txt", Duration::from_secs(120)).await;
+    assert_eq!(
+        client
+            .download_bytes(&identifier, "bytes.txt")
+            .await
+            .expect("download bytes file"),
+        "bytes artifact"
+    );
+
+    client
+        .delete_file(
+            &identifier,
+            "bytes.txt",
+            &DeleteOptions {
+                cascade_delete: true,
+                keep_old_version: true,
+            },
+        )
+        .await
+        .expect("delete bytes file");
 }
 
 #[tokio::test]
@@ -338,6 +448,48 @@ async fn live_workflow_helpers_round_trip() {
         Duration::from_secs(120),
     )
     .await;
+
+    let mut conflict_request = PublishRequest::new(
+        identifier.clone(),
+        ItemMetadata::builder()
+            .title(format!(
+                "internetarchive-rs workflow {}",
+                identifier.as_str()
+            ))
+            .build(),
+        vec![UploadSpec::from_path(&artifact).expect("conflict artifact")],
+    );
+    conflict_request.conflict_policy = FileConflictPolicy::Error;
+    let conflict_error = client
+        .upsert_item(conflict_request)
+        .await
+        .expect_err("upload conflict");
+    assert!(matches!(
+        conflict_error,
+        InternetArchiveError::UploadConflict { filename } if filename == "artifact.txt"
+    ));
+
+    tokio::fs::write(&artifact, "workflow artifact updated")
+        .await
+        .expect("rewrite artifact");
+    let mut history_request = PublishRequest::new(
+        identifier.clone(),
+        ItemMetadata::builder()
+            .title(format!(
+                "internetarchive-rs workflow {}",
+                identifier.as_str()
+            ))
+            .build(),
+        vec![UploadSpec::from_path(&artifact).expect("history artifact")],
+    );
+    history_request.conflict_policy = FileConflictPolicy::OverwriteKeepingHistory;
+    history_request.upload_options.skip_derive = true;
+    let history = client
+        .upsert_item(history_request)
+        .await
+        .expect("upsert keep history");
+    assert!(!history.created);
+    assert_eq!(history.uploaded_files, vec![String::from("artifact.txt")]);
 
     let mut upsert_request = PublishRequest::new(
         identifier.clone(),
