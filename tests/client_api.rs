@@ -334,6 +334,88 @@ async fn low_level_client_methods_cover_success_paths() {
 }
 
 #[tokio::test]
+async fn create_item_patches_non_header_metadata() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/demo.txt",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item",
+                "title": "Demo item"
+            }
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item",
+                "title": "Demo item"
+            }
+        }),
+    );
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 201,
+            "log": "https://catalogd.archive.org/log/201"
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item",
+                "title": "Demo item",
+                "custom": {"nested": true}
+            }
+        }),
+    );
+
+    client
+        .create_item(
+            &identifier,
+            &ItemMetadata::builder()
+                .title("Demo item")
+                .extra_json("custom", serde_json::json!({"nested": true}))
+                .build(),
+            &UploadSpec::from_bytes("demo.txt", b"hello"),
+            &UploadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    let patch = requests
+        .iter()
+        .find(|request| request.method == Method::POST && request.path == "/metadata/demo-item")
+        .unwrap();
+    let body = String::from_utf8(patch.body.clone()).unwrap();
+    assert!(body.contains("-target=metadata"));
+    assert!(body.contains("custom"));
+}
+
+#[tokio::test]
 async fn workflow_policies_cover_error_and_history_paths() {
     let server = MockInternetArchiveServer::start().await;
     let client = server.client();
@@ -487,6 +569,133 @@ async fn workflow_lookup_errors_are_propagated() {
         internetarchive_rs::InternetArchiveError::Http { status, .. }
             if status == StatusCode::BAD_GATEWAY
     ));
+}
+
+#[tokio::test]
+async fn workflow_outcome_waits_for_uploaded_file_visibility() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue(
+        Method::GET,
+        "/metadata/demo-item",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![(
+                String::from("content-type"),
+                String::from("application/json"),
+            )],
+            b"[]".to_vec(),
+        ),
+    );
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/demo.txt",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [],
+            "metadata": {"identifier": "demo-item", "title": "Demo item"}
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [],
+            "metadata": {"identifier": "demo-item", "title": "Demo item"}
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "Demo item"}
+        }),
+    );
+
+    let outcome = client
+        .publish_item(internetarchive_rs::PublishRequest::new(
+            identifier,
+            ItemMetadata::builder().title("Demo item").build(),
+            vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+        ))
+        .await
+        .unwrap();
+
+    assert!(outcome.item.file("demo.txt").is_some());
+}
+
+#[tokio::test]
+async fn workflow_outcome_waits_for_metadata_visibility() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "Old title"}
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "Old title"}
+        }),
+    );
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 301,
+            "log": "https://catalogd.archive.org/log/301"
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "Old title"}
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {"identifier": "demo-item", "title": "New title"}
+        }),
+    );
+
+    let mut request = internetarchive_rs::PublishRequest::new(
+        identifier,
+        ItemMetadata::builder().title("New title").build(),
+        vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+    );
+    request.conflict_policy = FileConflictPolicy::Skip;
+
+    let outcome = client.upsert_item(request).await.unwrap();
+    assert_eq!(outcome.item.metadata.title(), Some("New title"));
 }
 
 #[tokio::test]

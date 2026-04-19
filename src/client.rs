@@ -18,7 +18,8 @@ use crate::endpoint::Endpoint;
 use crate::error::{decode_metadata_write_failure, InternetArchiveError};
 use crate::ids::SecretPair;
 use crate::metadata::{
-    HeaderEncoding, ItemMetadata, MetadataChange, MetadataTarget, PatchOperation,
+    metadata_contains_projection, HeaderEncoding, ItemMetadata, MetadataChange, MetadataTarget,
+    PatchOperation,
 };
 use crate::model::{Item, MetadataWriteResponse, S3LimitCheck, SearchResponse};
 use crate::poll::PollOptions;
@@ -485,14 +486,19 @@ impl InternetArchiveClient {
         spec: &UploadSpec,
         options: &UploadOptions,
     ) -> Result<(), InternetArchiveError> {
-        self.put_object(
-            identifier,
-            spec,
-            options,
-            Some(metadata.as_header_encoding()),
-            true,
-        )
-        .await
+        let header_encoding = metadata.as_header_encoding();
+        let remainder = header_encoding.remainder.clone();
+        self.put_object(identifier, spec, options, Some(header_encoding), true)
+            .await?;
+
+        if !remainder.as_map().is_empty() {
+            self.wait_for_item(identifier).await?;
+            self.update_item_metadata(identifier, &remainder).await?;
+            self.wait_for_item_projection(identifier, &[], &remainder)
+                .await?;
+        }
+
+        Ok(())
     }
 
     /// Deletes a file from an item through the S3-like API.
@@ -575,6 +581,38 @@ impl InternetArchiveClient {
             self.get_item(identifier).await
         })
         .await
+    }
+
+    pub(crate) async fn wait_for_item_projection(
+        &self,
+        identifier: &ItemIdentifier,
+        expected_files: &[String],
+        expected_metadata: &ItemMetadata,
+    ) -> Result<Item, InternetArchiveError> {
+        let started = tokio::time::Instant::now();
+        let mut delay = self.poll.initial_delay;
+
+        loop {
+            match self.get_item(identifier).await {
+                Ok(item)
+                    if expected_files
+                        .iter()
+                        .all(|filename| item.file(filename).is_some())
+                        && metadata_contains_projection(&item.metadata, expected_metadata) =>
+                {
+                    return Ok(item);
+                }
+                Ok(_) | Err(InternetArchiveError::ItemNotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
+
+            if started.elapsed() >= self.poll.max_wait {
+                return Err(InternetArchiveError::Timeout("item projection visibility"));
+            }
+
+            tokio::time::sleep(delay).await;
+            delay = std::cmp::min(delay.saturating_mul(2), self.poll.max_delay);
+        }
     }
 
     async fn put_object(

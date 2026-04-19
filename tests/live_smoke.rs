@@ -27,8 +27,8 @@ fn unique_identifier(label: &str) -> ItemIdentifier {
     .expect("valid identifier")
 }
 
-fn live_credentials() -> Auth {
-    Auth::from_env().expect("live credentials")
+fn live_credentials() -> Option<Auth> {
+    Auth::from_env().ok()
 }
 
 async fn wait_for_item_file(
@@ -135,9 +135,13 @@ async fn publish_with_fresh_identifier(
 }
 
 #[tokio::test]
-#[ignore = "requires live Internet Archive credentials"]
 async fn live_low_level_client_api_round_trip() {
-    let auth = live_credentials();
+    let Some(auth) = live_credentials() else {
+        eprintln!(
+            "Skipping live_low_level_client_api_round_trip: missing Internet Archive credentials"
+        );
+        return;
+    };
     let access_key = std::env::var(Auth::ACCESS_KEY_ENV_VAR).unwrap();
     let secret_key = std::env::var(Auth::SECRET_KEY_ENV_VAR).unwrap();
     std::env::set_var("IA_LIVE_ACCESS_COPY", &access_key);
@@ -312,8 +316,13 @@ async fn live_low_level_client_api_round_trip() {
 }
 
 #[tokio::test]
-#[ignore = "requires live Internet Archive credentials"]
 async fn live_workflow_helpers_round_trip() {
+    let Some(_) = live_credentials() else {
+        eprintln!(
+            "Skipping live_workflow_helpers_round_trip: missing Internet Archive credentials"
+        );
+        return;
+    };
     let client = InternetArchiveClient::from_env().expect("live credentials");
     let tempdir = tempdir().expect("tempdir");
     let artifact = tempdir.path().join("artifact.txt");

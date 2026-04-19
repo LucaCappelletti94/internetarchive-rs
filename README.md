@@ -12,15 +12,14 @@
 
 ## Read Example
 
-```rust,no_run
-use internetarchive_rs::InternetArchiveClient;
+```rust
+use internetarchive_rs::{InternetArchiveClient, ItemIdentifier};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = InternetArchiveClient::new()?;
-    let item = client.get_item_by_str("xfetch").await?;
-    let pdf = item.file("xfetch.pdf").expect("file exists");
-    assert_eq!(pdf.name, "xfetch.pdf");
+    let identifier = ItemIdentifier::new("xfetch")?;
+    let download = client.resolve_download(&identifier, "xfetch.pdf")?;
+    assert!(download.url.as_str().ends_with("/download/xfetch/xfetch.pdf"));
 
     Ok(())
 }
@@ -28,28 +27,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Search Example
 
-```rust,no_run
-use internetarchive_rs::{InternetArchiveClient, SearchQuery, SortDirection};
+```rust
+use internetarchive_rs::{Endpoint, SearchQuery, SortDirection};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = InternetArchiveClient::new()?;
-    let results = client
-        .search(
-            &SearchQuery::builder("collection:opensource AND mediatype:texts")
-                .field("identifier")
-                .field("title")
-                .rows(5)
-                .sort("publicdate", SortDirection::Desc)
-                .build(),
-        )
-        .await?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let query = SearchQuery::builder("collection:opensource AND mediatype:texts")
+        .field("identifier")
+        .field("title")
+        .rows(5)
+        .sort("publicdate", SortDirection::Desc)
+        .build();
 
-    for doc in results.response.docs {
-        let identifier = doc.identifier().expect("identifier field requested");
-        let title = doc.title().unwrap_or("<untitled>");
-        println!("{identifier}: {title}");
-    }
+    let url = query.into_url(Endpoint::default().search_url()?)?;
+    assert!(url.as_str().contains("collection%3Aopensource"));
+    assert!(url.as_str().contains("sort%5B%5D=publicdate+desc"));
 
     Ok(())
 }
@@ -57,14 +48,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Publish Example
 
-```rust,no_run
+```rust
 use internetarchive_rs::{
     InternetArchiveClient, ItemIdentifier, ItemMetadata, MediaType, PublishRequest, UploadSpec,
 };
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = InternetArchiveClient::from_env()?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = InternetArchiveClient::new()?;
     let request = PublishRequest::new(
         ItemIdentifier::new("my-demo-item-2026-04-18")?,
         ItemMetadata::builder()
@@ -74,14 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .collection("opensource")
             .language("eng")
             .build(),
-        vec![UploadSpec::from_path("artifact.txt")?],
+        vec![UploadSpec::from_bytes("artifact.txt", b"Created from Rust")],
     );
 
-    let outcome = client.upsert_item(request).await?;
-    println!(
-        "created={}, uploaded={:?}",
-        outcome.created, outcome.uploaded_files
-    );
+    assert!(!client.has_auth());
+    assert_eq!(request.identifier.as_str(), "my-demo-item-2026-04-18");
+    assert_eq!(request.uploads[0].filename, "artifact.txt");
 
     Ok(())
 }
@@ -89,23 +77,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Low-Level Metadata Patch Example
 
-```rust,no_run
-use internetarchive_rs::{
-    InternetArchiveClient, ItemIdentifier, MetadataTarget, PatchOperation,
-};
+```rust
+use internetarchive_rs::{MetadataChange, MetadataTarget, PatchOperation};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = InternetArchiveClient::from_env()?;
-    let identifier = ItemIdentifier::new("my-demo-item-2026-04-18")?;
-
-    client
-        .apply_metadata_patch(
-            &identifier,
-            MetadataTarget::Metadata,
-            &[PatchOperation::replace("/title", "Updated title")],
-        )
-        .await?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let change = MetadataChange::new(
+        &MetadataTarget::Metadata,
+        vec![PatchOperation::replace("/title", "Updated title")],
+    );
+    let json = serde_json::to_string(&change)?;
+    assert!(json.contains("\"target\":\"metadata\""));
+    assert!(json.contains("\"op\":\"replace\""));
 
     Ok(())
 }

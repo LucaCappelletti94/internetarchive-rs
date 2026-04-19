@@ -207,6 +207,14 @@ impl ItemMetadata {
     }
 }
 
+pub(crate) fn metadata_contains_projection(actual: &ItemMetadata, expected: &ItemMetadata) -> bool {
+    expected.as_map().iter().all(|(key, expected_value)| {
+        actual
+            .get(key)
+            .is_some_and(|actual_value| metadata_values_match(actual_value, expected_value))
+    })
+}
+
 impl From<BTreeMap<String, Value>> for ItemMetadata {
     fn from(value: BTreeMap<String, Value>) -> Self {
         Self(value)
@@ -475,6 +483,16 @@ fn append_text_value(map: &mut BTreeMap<String, Value>, key: &str, value: String
         None => {
             map.insert(key.to_owned(), Value::String(value));
         }
+    }
+}
+
+fn metadata_values_match(actual: &Value, expected: &Value) -> bool {
+    match (
+        normalize_string_list(actual),
+        normalize_string_list(expected),
+    ) {
+        (Some(actual), Some(expected)) => actual == expected,
+        _ => actual == expected,
     }
 }
 

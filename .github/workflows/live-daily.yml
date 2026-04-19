@@ -68,4 +68,4 @@ jobs:
           test -n "$INTERNET_ARCHIVE_SECRET_KEY" || { echo "Missing INTERNET_ARCHIVE_SECRET_KEY secret"; exit 1; }
 
       - name: Run live full API suite
-        run: cargo test --test live_smoke --all-features --locked -- --ignored --nocapture --test-threads=1
+        run: cargo test --test live_smoke --all-features --locked -- --nocapture --test-threads=1

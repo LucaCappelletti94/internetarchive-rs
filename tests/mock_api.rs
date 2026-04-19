@@ -78,6 +78,36 @@ async fn publish_item_creates_item_and_patches_non_header_metadata() {
             }
         }),
     );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item",
+                "mediatype": "texts",
+                "title": "Demo item",
+                "collection": ["opensource"],
+                "custom": {"nested": true}
+            }
+        }),
+    );
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "files": [{"name": "demo.txt", "size": "5"}],
+            "metadata": {
+                "identifier": "demo-item",
+                "mediatype": "texts",
+                "title": "Demo item",
+                "collection": ["opensource"],
+                "custom": {"nested": true}
+            }
+        }),
+    );
 
     let request = PublishRequest::new(
         identifier.clone(),

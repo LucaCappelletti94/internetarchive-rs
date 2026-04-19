@@ -2,7 +2,7 @@
 
 use crate::client::InternetArchiveClient;
 use crate::error::InternetArchiveError;
-use crate::metadata::ItemMetadata;
+use crate::metadata::{metadata_contains_projection, ItemMetadata};
 use crate::model::Item;
 use crate::upload::{FileConflictPolicy, UploadOptions, UploadSpec};
 use crate::ItemIdentifier;
@@ -118,7 +118,7 @@ impl InternetArchiveClient {
 
         let mut uploaded_files = Vec::new();
         let mut skipped_files = Vec::new();
-        let mut metadata_changed = false;
+        let mut metadata_changed;
 
         if let Some(existing) = existing.as_ref() {
             for spec in &request.uploads {
@@ -152,6 +152,12 @@ impl InternetArchiveClient {
                 .await?;
             metadata_changed = response.task_id.is_some();
         } else {
+            metadata_changed = !request
+                .metadata
+                .as_header_encoding()
+                .remainder
+                .as_map()
+                .is_empty();
             let first = &request.uploads[0];
             self.create_item(
                 &request.identifier,
@@ -169,7 +175,7 @@ impl InternetArchiveClient {
             }
 
             let current = self.wait_for_item(&request.identifier).await?;
-            if current.metadata != request.metadata {
+            if !metadata_contains_projection(&current.metadata, &request.metadata) {
                 let response = self
                     .update_item_metadata(&request.identifier, &request.metadata)
                     .await?;
@@ -177,7 +183,9 @@ impl InternetArchiveClient {
             }
         }
 
-        let item = self.wait_for_item(&request.identifier).await?;
+        let item = self
+            .wait_for_item_projection(&request.identifier, &uploaded_files, &request.metadata)
+            .await?;
         Ok(PublishOutcome {
             item,
             created,

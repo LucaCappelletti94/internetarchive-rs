@@ -5,7 +5,7 @@ This repository has two CI layers:
 - regular push and pull request checks in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
 - a scheduled live workflow in [`.github/workflows/live-daily.yml`](../.github/workflows/live-daily.yml)
 
-The scheduled workflow runs the ignored tests in [`tests/live_smoke.rs`](../tests/live_smoke.rs).
+The scheduled workflow runs the live tests in [`tests/live_smoke.rs`](../tests/live_smoke.rs).
 
 Each daily run now exercises the full public client workflow surface against the real Internet Archive APIs:
 
@@ -37,3 +37,4 @@ These are the LOW-auth S3 credentials from:
 - The workflow sets `skip_derive` on live uploads to reduce backend work.
 - Internet Archive does not support deleting buckets through the S3-like API, so the live suite does not attempt cleanup of whole items after creation.
 - The workflow is also exposed through `workflow_dispatch` so credentials or API behavior can be verified manually.
+- The live tests are regular tests. They always run, and they return early only when the required credentials are absent.
