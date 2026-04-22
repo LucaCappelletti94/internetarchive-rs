@@ -1,8 +1,16 @@
 //! Low-level typed Internet Archive client operations.
 
 use std::path::Path;
+#[cfg(feature = "indicatif")]
+use std::pin::Pin;
+#[cfg(feature = "indicatif")]
+use std::task::{Context, Poll};
 use std::time::Duration;
 
+#[cfg(feature = "indicatif")]
+use futures_core::Stream;
+#[cfg(feature = "indicatif")]
+use indicatif::ProgressBar;
 use reqwest::header::{
     HeaderMap, HeaderName, HeaderValue, ACCEPT, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE,
     LOCATION,
@@ -476,6 +484,27 @@ impl InternetArchiveClient {
             .await
     }
 
+    /// Uploads a file to an existing item while updating an `indicatif`
+    /// progress bar.
+    ///
+    /// Available when the `indicatif` feature is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client has no credentials, the request fails, or
+    /// IA rejects the upload.
+    #[cfg(feature = "indicatif")]
+    pub async fn upload_file_with_progress(
+        &self,
+        identifier: &ItemIdentifier,
+        spec: &UploadSpec,
+        options: &UploadOptions,
+        progress: &ProgressBar,
+    ) -> Result<(), InternetArchiveError> {
+        self.put_object_with_progress(identifier, spec, options, None, false, progress)
+            .await
+    }
+
     /// Creates a new item by uploading the first file with automatic bucket
     /// creation headers and initial metadata.
     ///
@@ -494,6 +523,46 @@ impl InternetArchiveClient {
         let remainder = header_encoding.remainder.clone();
         self.put_object(identifier, spec, options, Some(header_encoding), true)
             .await?;
+
+        if !remainder.as_map().is_empty() {
+            self.wait_for_item(identifier).await?;
+            self.update_item_metadata(identifier, &remainder).await?;
+            self.wait_for_item_projection(identifier, &[], &remainder)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Creates a new item while updating an `indicatif` progress bar for the
+    /// initial upload step.
+    ///
+    /// Available when the `indicatif` feature is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client has no credentials, the request fails, or
+    /// IA rejects the upload.
+    #[cfg(feature = "indicatif")]
+    pub async fn create_item_with_progress(
+        &self,
+        identifier: &ItemIdentifier,
+        metadata: &ItemMetadata,
+        spec: &UploadSpec,
+        options: &UploadOptions,
+        progress: &ProgressBar,
+    ) -> Result<(), InternetArchiveError> {
+        let header_encoding = metadata.as_header_encoding();
+        let remainder = header_encoding.remainder.clone();
+        self.put_object_with_progress(
+            identifier,
+            spec,
+            options,
+            Some(header_encoding),
+            true,
+            progress,
+        )
+        .await?;
 
         if !remainder.as_map().is_empty() {
             self.wait_for_item(identifier).await?;
@@ -561,6 +630,25 @@ impl InternetArchiveClient {
         self.execute_bytes(self.inner.get(resolved.url)).await
     }
 
+    /// Downloads a file into memory while updating an `indicatif` progress bar.
+    ///
+    /// Available when the `indicatif` feature is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request fails.
+    #[cfg(feature = "indicatif")]
+    pub async fn download_bytes_with_progress(
+        &self,
+        identifier: &ItemIdentifier,
+        filename: &str,
+        progress: &ProgressBar,
+    ) -> Result<bytes::Bytes, InternetArchiveError> {
+        let resolved = self.resolve_download(identifier, filename)?;
+        self.execute_bytes_with_progress(self.inner.get(resolved.url), progress)
+            .await
+    }
+
     /// Downloads a file to a local path.
     ///
     /// # Errors
@@ -573,6 +661,29 @@ impl InternetArchiveClient {
         path: impl AsRef<Path>,
     ) -> Result<(), InternetArchiveError> {
         let bytes = self.download_bytes(identifier, filename).await?;
+        tokio::fs::write(path, &bytes).await?;
+        Ok(())
+    }
+
+    /// Downloads a file to a local path while updating an `indicatif`
+    /// progress bar.
+    ///
+    /// Available when the `indicatif` feature is enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the request or local file write fails.
+    #[cfg(feature = "indicatif")]
+    pub async fn download_to_path_with_progress(
+        &self,
+        identifier: &ItemIdentifier,
+        filename: &str,
+        path: impl AsRef<Path>,
+        progress: &ProgressBar,
+    ) -> Result<(), InternetArchiveError> {
+        let bytes = self
+            .download_bytes_with_progress(identifier, filename, progress)
+            .await?;
         tokio::fs::write(path, &bytes).await?;
         Ok(())
     }
@@ -618,6 +729,40 @@ impl InternetArchiveClient {
         metadata: Option<HeaderEncoding>,
         auto_make_bucket: bool,
     ) -> Result<(), InternetArchiveError> {
+        let (url, headers, body) = self
+            .prepare_put_object(identifier, spec, options, metadata, auto_make_bucket)
+            .await?;
+        self.execute_s3(Method::PUT, url, headers, Some(body))
+            .await?;
+        Ok(())
+    }
+
+    #[cfg(feature = "indicatif")]
+    async fn put_object_with_progress(
+        &self,
+        identifier: &ItemIdentifier,
+        spec: &UploadSpec,
+        options: &UploadOptions,
+        metadata: Option<HeaderEncoding>,
+        auto_make_bucket: bool,
+        progress: &ProgressBar,
+    ) -> Result<(), InternetArchiveError> {
+        let (url, headers, body) = self
+            .prepare_put_object(identifier, spec, options, metadata, auto_make_bucket)
+            .await?;
+        self.execute_s3_with_progress(Method::PUT, url, headers, Some(body), progress)
+            .await?;
+        Ok(())
+    }
+
+    async fn prepare_put_object(
+        &self,
+        identifier: &ItemIdentifier,
+        spec: &UploadSpec,
+        options: &UploadOptions,
+        metadata: Option<HeaderEncoding>,
+        auto_make_bucket: bool,
+    ) -> Result<(Url, HeaderMap, ReplayableBody), InternetArchiveError> {
         let mut headers = HeaderMap::new();
         headers.insert(
             CONTENT_TYPE,
@@ -679,9 +824,7 @@ impl InternetArchiveClient {
         let url = self
             .endpoint
             .s3_object_url(identifier.as_str(), &spec.filename)?;
-        self.execute_s3(Method::PUT, url, headers, Some(body))
-            .await?;
-        Ok(())
+        Ok((url, headers, body))
     }
 
     fn archive_request(&self, method: Method, url: Url) -> reqwest::RequestBuilder {
@@ -733,6 +876,39 @@ impl InternetArchiveClient {
             return Err(InternetArchiveError::from_response(response).await);
         }
         response.bytes().await.map_err(Into::into)
+    }
+
+    #[cfg(feature = "indicatif")]
+    async fn execute_bytes_with_progress(
+        &self,
+        request: reqwest::RequestBuilder,
+        progress: &ProgressBar,
+    ) -> Result<bytes::Bytes, InternetArchiveError> {
+        progress.set_position(0);
+
+        let mut response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(InternetArchiveError::from_response(response).await);
+        }
+
+        if let Some(length) = response.content_length() {
+            progress.set_length(length);
+        }
+
+        let mut bytes = response
+            .content_length()
+            .and_then(|length| usize::try_from(length).ok())
+            .map_or_else(Vec::new, Vec::with_capacity);
+
+        while let Some(chunk) = response.chunk().await? {
+            progress.inc(u64::try_from(chunk.len()).map_err(|_| {
+                InternetArchiveError::InvalidState("download chunk size overflow".to_owned())
+            })?);
+            bytes.extend_from_slice(&chunk);
+        }
+
+        progress.finish();
+        Ok(bytes::Bytes::from(bytes))
     }
 
     async fn execute_metadata_write(
@@ -804,6 +980,64 @@ impl InternetArchiveClient {
         }
     }
 
+    #[cfg(feature = "indicatif")]
+    async fn execute_s3_with_progress(
+        &self,
+        method: Method,
+        url: Url,
+        headers: HeaderMap,
+        body: Option<ReplayableBody>,
+        progress: &ProgressBar,
+    ) -> Result<reqwest::Response, InternetArchiveError> {
+        let mut current_url = url;
+        let mut remaining_redirects = 8_u8;
+
+        loop {
+            let mut request =
+                self.s3_request(method.clone(), current_url.clone(), headers.clone())?;
+            if let Some(body) = &body {
+                request = body.apply_with_progress(request, progress).await?;
+            }
+
+            let response = request.send().await?;
+            if is_redirect(response.status()) {
+                let Some(location) = response.headers().get(LOCATION).cloned() else {
+                    return Err(InternetArchiveError::InvalidState(
+                        "redirect response missing location header".to_owned(),
+                    ));
+                };
+
+                if remaining_redirects == 0 {
+                    return Err(InternetArchiveError::InvalidState(
+                        "too many redirects during S3 request".to_owned(),
+                    ));
+                }
+
+                let location = location.to_str().map_err(|_| {
+                    InternetArchiveError::InvalidState(
+                        "redirect location is not valid UTF-8".to_owned(),
+                    )
+                })?;
+                let redirected_url = current_url.join(location)?;
+                if redirected_url.origin() != self.endpoint.s3_base().origin() {
+                    return Err(InternetArchiveError::InvalidState(
+                        "refusing to forward credentials to redirected S3 host".to_owned(),
+                    ));
+                }
+                current_url = redirected_url;
+                remaining_redirects -= 1;
+                continue;
+            }
+
+            if !response.status().is_success() {
+                return Err(InternetArchiveError::from_response(response).await);
+            }
+
+            progress.finish();
+            return Ok(response);
+        }
+    }
+
     pub(crate) async fn wait_until<T, F, Fut>(
         &self,
         label: &'static str,
@@ -861,6 +1095,115 @@ impl ReplayableBody {
                 .header(CONTENT_LENGTH, bytes.len())
                 .body(bytes.clone())),
         }
+    }
+
+    #[cfg(feature = "indicatif")]
+    async fn apply_with_progress(
+        &self,
+        request: reqwest::RequestBuilder,
+        progress: &ProgressBar,
+    ) -> Result<reqwest::RequestBuilder, InternetArchiveError> {
+        progress.set_position(0);
+
+        match self {
+            Self::Path { path, length } => {
+                progress.set_length(*length);
+                let file = File::open(path).await?;
+                Ok(request
+                    .header(CONTENT_LENGTH, *length)
+                    .body(reqwest::Body::wrap_stream(ProgressStream::new(
+                        ReaderStream::new(file),
+                        progress.clone(),
+                    ))))
+            }
+            Self::Bytes(bytes) => {
+                let length = u64::try_from(bytes.len()).map_err(|_| {
+                    InternetArchiveError::InvalidState("upload body size overflow".to_owned())
+                })?;
+                progress.set_length(length);
+                Ok(request
+                    .header(CONTENT_LENGTH, length)
+                    .body(reqwest::Body::wrap_stream(ProgressStream::new(
+                        ChunkedBytesStream::new(bytes::Bytes::from(bytes.clone())),
+                        progress.clone(),
+                    ))))
+            }
+        }
+    }
+}
+
+#[cfg(feature = "indicatif")]
+struct ProgressStream<S> {
+    inner: S,
+    progress: ProgressBar,
+}
+
+#[cfg(feature = "indicatif")]
+impl<S> ProgressStream<S> {
+    fn new(inner: S, progress: ProgressBar) -> Self {
+        Self { inner, progress }
+    }
+}
+
+#[cfg(feature = "indicatif")]
+impl<S> Stream for ProgressStream<S>
+where
+    S: Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
+{
+    type Item = Result<bytes::Bytes, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match Pin::new(&mut this.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                let delta = match u64::try_from(chunk.len()) {
+                    Ok(delta) => delta,
+                    Err(_) => {
+                        return Poll::Ready(Some(Err(std::io::Error::other(
+                            "transfer chunk size overflow",
+                        ))));
+                    }
+                };
+                this.progress.inc(delta);
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            other => other,
+        }
+    }
+}
+
+#[cfg(feature = "indicatif")]
+struct ChunkedBytesStream {
+    bytes: bytes::Bytes,
+    offset: usize,
+}
+
+#[cfg(feature = "indicatif")]
+impl ChunkedBytesStream {
+    const CHUNK_SIZE: usize = 16 * 1024;
+
+    fn new(bytes: bytes::Bytes) -> Self {
+        Self { bytes, offset: 0 }
+    }
+}
+
+#[cfg(feature = "indicatif")]
+impl Stream for ChunkedBytesStream {
+    type Item = Result<bytes::Bytes, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.offset >= this.bytes.len() {
+            return Poll::Ready(None);
+        }
+
+        let end = this
+            .offset
+            .saturating_add(Self::CHUNK_SIZE)
+            .min(this.bytes.len());
+        let chunk = this.bytes.slice(this.offset..end);
+        this.offset = end;
+        Poll::Ready(Some(Ok(chunk)))
     }
 }
 

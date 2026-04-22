@@ -3,6 +3,8 @@
 mod mock_support;
 
 use axum::http::{Method, StatusCode};
+#[cfg(feature = "indicatif")]
+use internetarchive_rs::indicatif::ProgressBar;
 use internetarchive_rs::{
     DeleteOptions, DownloadTarget, Endpoint, FileConflictPolicy, ItemIdentifier, ItemMetadata,
     MediaType, MetadataChange, MetadataTarget, MetadataValue, PatchOperation, SearchQuery,
@@ -332,6 +334,88 @@ async fn low_level_client_methods_cover_success_paths() {
             .unwrap(),
         "1"
     );
+}
+
+#[cfg(feature = "indicatif")]
+#[tokio::test]
+async fn progress_methods_update_indicatif_bars() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    let tempdir = tempfile::tempdir().unwrap();
+    let upload_path = tempdir.path().join("progress.bin");
+    let download_path = tempdir.path().join("downloaded.bin");
+    let upload_body = b"hello progress".to_vec();
+    let download_body = b"download progress".to_vec();
+    tokio::fs::write(&upload_path, &upload_body).await.unwrap();
+
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/progress.bin",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+    server.enqueue(
+        Method::GET,
+        "/download/demo-item/progress.bin",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![(
+                String::from("content-length"),
+                download_body.len().to_string(),
+            )],
+            download_body.clone(),
+        ),
+    );
+    server.enqueue(
+        Method::GET,
+        "/download/demo-item/progress.bin",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![(
+                String::from("content-length"),
+                download_body.len().to_string(),
+            )],
+            download_body.clone(),
+        ),
+    );
+
+    let upload_bar = ProgressBar::hidden();
+    client
+        .upload_file_with_progress(
+            &identifier,
+            &UploadSpec::from_path(&upload_path).unwrap(),
+            &UploadOptions::default(),
+            &upload_bar,
+        )
+        .await
+        .unwrap();
+    assert_eq!(upload_bar.length(), Some(upload_body.len() as u64));
+    assert_eq!(upload_bar.position(), upload_body.len() as u64);
+    assert!(upload_bar.is_finished());
+
+    let download_bar = ProgressBar::hidden();
+    let bytes = client
+        .download_bytes_with_progress(&identifier, "progress.bin", &download_bar)
+        .await
+        .unwrap();
+    assert_eq!(bytes, download_body);
+    assert_eq!(download_bar.length(), Some(download_body.len() as u64));
+    assert_eq!(download_bar.position(), download_body.len() as u64);
+    assert!(download_bar.is_finished());
+
+    let path_bar = ProgressBar::hidden();
+    client
+        .download_to_path_with_progress(&identifier, "progress.bin", &download_path, &path_bar)
+        .await
+        .unwrap();
+    assert_eq!(
+        tokio::fs::read(&download_path).await.unwrap(),
+        download_body
+    );
+    assert_eq!(path_bar.length(), Some(download_body.len() as u64));
+    assert_eq!(path_bar.position(), download_body.len() as u64);
+    assert!(path_bar.is_finished());
 }
 
 #[tokio::test]

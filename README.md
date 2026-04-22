@@ -104,6 +104,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Authenticated write helpers use LOW auth credentials and read these standard environment variables:
 `INTERNET_ARCHIVE_ACCESS_KEY` and `INTERNET_ARCHIVE_SECRET_KEY`. You can create S3 credentials from the official Internet Archive API key page at `https://archive.org/account/s3.php`.
 
+## Progress Bars
+
+Enable the optional `indicatif` feature if you want upload and download helpers that update a progress bar:
+
+```toml
+internetarchive-rs = { version = "0.1.2", features = ["indicatif"] }
+```
+
+The crate re-exports `indicatif` when that feature is enabled, so you can use `internetarchive_rs::indicatif::ProgressBar` without adding a separate direct dependency.
+
 ## Operational Notes
 
 Internet Archive's own upload-limit guidance is inconsistent, so the safest choice is to plan conservatively. The official [Uploading - Troubleshooting](https://archivesupport.zendesk.com/hc/en-us/articles/360016700691-Uploading-Troubleshooting) page, updated on August 2, 2021, says a single file should stay around 500 to 700 GB, recommends keeping an item under 10,000 files and 1 TB total, and notes that the API can technically accept up to 250,000 files. The official [Uploading - Tips](https://archivesupport.zendesk.com/hc/en-us/articles/360016475032-Uploading-Tips) page, updated on August 25, 2021, instead says there is no hard size or file-count limit, but still recommends staying under 50 GB and 1,000 files per single page. For automated ingest, it is better to treat these pages as operational guidance than as a strict contract.

@@ -44,6 +44,8 @@ pub use downloads::{DownloadTarget, ResolvedDownload};
 pub use endpoint::Endpoint;
 pub use error::InternetArchiveError;
 pub use ids::{IdentifierError, ItemIdentifier, TaskId};
+#[cfg(feature = "indicatif")]
+pub use indicatif;
 pub use metadata::{
     ItemMetadata, ItemMetadataBuilder, MediaType, MetadataChange, MetadataTarget, MetadataValue,
     PatchOperation,

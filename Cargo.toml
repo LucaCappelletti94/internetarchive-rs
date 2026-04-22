@@ -17,10 +17,13 @@ all-features = true
 default = ["rustls-tls"]
 native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls"]
+indicatif = ["dep:futures-core", "dep:indicatif"]
 
 [dependencies]
 bytes = "1.10"
 client-uploader-traits = "0.1.0"
+futures-core = { version = "0.3", optional = true }
+indicatif = { version = "0.17", optional = true }
 json-patch = "4.1"
 mime = "0.3"
 mime_guess = "2.0"
