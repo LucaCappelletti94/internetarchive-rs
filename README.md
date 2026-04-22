@@ -55,16 +55,20 @@ use internetarchive_rs::{
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = InternetArchiveClient::new()?;
+    let upload = UploadSpec::from_path_as("/tmp/build/artifact.tmp", "artifact.txt")?;
     let request = PublishRequest::new(
         ItemIdentifier::new("my-demo-item-2026-04-18")?,
         ItemMetadata::builder()
             .mediatype(MediaType::Texts)
             .title("internetarchive-rs example")
             .description_html("<p>Created from Rust</p>")
+            .date("2026-04-18")
             .collection("opensource")
+            .publisher("internetarchive-rs")
             .language("eng")
+            .rights("CC BY 4.0")
             .build(),
-        vec![UploadSpec::from_bytes("artifact.txt", b"Created from Rust")],
+        vec![upload],
     );
 
     assert!(!client.has_auth());

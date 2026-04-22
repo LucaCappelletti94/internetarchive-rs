@@ -294,6 +294,14 @@ impl ItemMetadataBuilder {
         self
     }
 
+    /// Sets the item archival date.
+    #[must_use]
+    pub fn date(mut self, date: impl Into<String>) -> Self {
+        self.inner
+            .insert("date".to_owned(), Value::String(date.into()));
+        self
+    }
+
     /// Appends a collection membership.
     #[must_use]
     pub fn collection(mut self, collection: impl Into<String>) -> Self {
@@ -305,6 +313,13 @@ impl ItemMetadataBuilder {
     #[must_use]
     pub fn creator(mut self, creator: impl Into<String>) -> Self {
         append_text_value(&mut self.inner, "creator", creator.into());
+        self
+    }
+
+    /// Appends a publisher value.
+    #[must_use]
+    pub fn publisher(mut self, publisher: impl Into<String>) -> Self {
+        append_text_value(&mut self.inner, "publisher", publisher.into());
         self
     }
 
@@ -327,6 +342,14 @@ impl ItemMetadataBuilder {
     pub fn license_url(mut self, license_url: impl Into<String>) -> Self {
         self.inner
             .insert("licenseurl".to_owned(), Value::String(license_url.into()));
+        self
+    }
+
+    /// Sets the item rights statement.
+    #[must_use]
+    pub fn rights(mut self, rights: impl Into<String>) -> Self {
+        self.inner
+            .insert("rights".to_owned(), Value::String(rights.into()));
         self
     }
 
@@ -624,10 +647,13 @@ mod tests {
             .mediatype(MediaType::Custom("zines".to_owned()))
             .title("Demo")
             .description_html("<p>Description</p>")
+            .date("2026-04-22")
             .collection("opensource")
             .creator("Jane Doe")
+            .publisher("Example Press")
             .subject("rust")
             .language("eng")
+            .rights("CC BY 4.0")
             .license_url("https://creativecommons.org/licenses/by/4.0/")
             .extra_text("identifier", "demo-item")
             .extra_texts("collection", ["opensource", "community"])
@@ -636,10 +662,16 @@ mod tests {
 
         assert_eq!(metadata.get("custom").unwrap(), &json!({"nested": true}));
         assert_eq!(metadata.get_text("title"), Some("Demo"));
+        assert_eq!(metadata.get_text("date"), Some("2026-04-22"));
         assert_eq!(
             metadata.get_texts("collection").unwrap(),
             vec!["opensource".to_owned(), "community".to_owned()]
         );
+        assert_eq!(
+            metadata.get_texts("publisher").unwrap(),
+            vec!["Example Press".to_owned()]
+        );
+        assert_eq!(metadata.get_text("rights"), Some("CC BY 4.0"));
         assert_eq!(metadata.title(), Some("Demo"));
         assert_eq!(
             metadata.mediatype(),
