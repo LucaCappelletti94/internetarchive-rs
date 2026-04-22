@@ -204,11 +204,11 @@ impl ListResourceFiles for InternetArchiveClient {
     type ResourceId = ItemIdentifier;
     type File = ItemFile;
 
-    fn list_resource_files(
+    async fn list_resource_files(
         &self,
         id: &Self::ResourceId,
-    ) -> impl Future<Output = Result<Vec<Self::File>, Self::Error>> {
-        async move { Ok(self.get_item(id).await?.files) }
+    ) -> Result<Vec<Self::File>, Self::Error> {
+        Ok(self.get_item(id).await?.files)
     }
 }
 
@@ -216,16 +216,14 @@ impl DownloadNamedPublicFile for InternetArchiveClient {
     type ResourceId = ItemIdentifier;
     type Download = ResolvedDownload;
 
-    fn download_named_public_file_to_path(
+    async fn download_named_public_file_to_path(
         &self,
         id: &Self::ResourceId,
         name: &str,
         path: &Path,
-    ) -> impl Future<Output = Result<Self::Download, Self::Error>> {
-        async move {
-            self.download_to_path(id, name, path).await?;
-            self.resolve_download(id, name)
-        }
+    ) -> Result<Self::Download, Self::Error> {
+        self.download_to_path(id, name, path).await?;
+        self.resolve_download(id, name)
     }
 }
 
