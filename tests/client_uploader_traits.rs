@@ -142,7 +142,24 @@ fn inspection_traits_cover_internet_archive_types() {
     assert_eq!(search.page_len(), 1);
     assert_eq!(search.total_hits(), Some(7));
     assert_eq!(search.items()[0].title(), Some("Demo item"));
+    assert_eq!(
+        SearchResultsLike::items(&search.response)[0].title(),
+        Some("Demo item")
+    );
+    assert_eq!(SearchResultsLike::total_hits(&search.response), Some(7));
 
+    assert_eq!(
+        FileConflictPolicy::Error.kind(),
+        ExistingFileConflictPolicyKind::Error
+    );
+    assert_eq!(
+        FileConflictPolicy::Skip.kind(),
+        ExistingFileConflictPolicyKind::Skip
+    );
+    assert_eq!(
+        FileConflictPolicy::Overwrite.kind(),
+        ExistingFileConflictPolicyKind::Overwrite
+    );
     assert_eq!(
         FileConflictPolicy::OverwriteKeepingHistory.kind(),
         ExistingFileConflictPolicyKind::OverwriteKeepingHistory
@@ -180,6 +197,7 @@ fn client_context_traits_match_existing_client_configuration() {
         .unwrap();
     assert_shared_context(&client, timeout, connect_timeout);
     assert_eq!(client.poll_options(), &poll);
+    assert_eq!(ClientContext::poll_options(&client), &poll);
     assert!(!client.has_auth());
     assert!(!MaybeAuthenticatedClient::has_auth(&client));
 

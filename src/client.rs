@@ -901,9 +901,7 @@ impl InternetArchiveClient {
             .map_or_else(Vec::new, Vec::with_capacity);
 
         while let Some(chunk) = response.chunk().await? {
-            progress.inc(u64::try_from(chunk.len()).map_err(|_| {
-                InternetArchiveError::InvalidState("download chunk size overflow".to_owned())
-            })?);
+            progress.inc(chunk.len() as u64);
             bytes.extend_from_slice(&chunk);
         }
 
@@ -1117,9 +1115,7 @@ impl ReplayableBody {
                     ))))
             }
             Self::Bytes(bytes) => {
-                let length = u64::try_from(bytes.len()).map_err(|_| {
-                    InternetArchiveError::InvalidState("upload body size overflow".to_owned())
-                })?;
+                let length = bytes.len() as u64;
                 progress.set_length(length);
                 Ok(request
                     .header(CONTENT_LENGTH, length)
@@ -1156,12 +1152,7 @@ where
         let this = self.get_mut();
         match Pin::new(&mut this.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                let Ok(delta) = u64::try_from(chunk.len()) else {
-                    return Poll::Ready(Some(Err(std::io::Error::other(
-                        "transfer chunk size overflow",
-                    ))));
-                };
-                this.progress.inc(delta);
+                this.progress.inc(chunk.len() as u64);
                 Poll::Ready(Some(Ok(chunk)))
             }
             other => other,
@@ -1253,19 +1244,31 @@ fn decode_search_response(bytes: &[u8]) -> Result<SearchResponse, InternetArchiv
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "indicatif")]
+    use std::pin::Pin;
     use std::sync::OnceLock;
+    #[cfg(feature = "indicatif")]
+    use std::task::{Context, Poll, Waker};
     use std::time::Duration;
 
     use axum::extract::State;
     use axum::http::{HeaderMap, HeaderValue, StatusCode};
     use axum::routing::{get, put};
     use axum::{Json, Router};
+    #[cfg(feature = "indicatif")]
+    use bytes::Bytes;
+    #[cfg(feature = "indicatif")]
+    use futures_core::Stream;
+    #[cfg(feature = "indicatif")]
+    use indicatif::ProgressBar;
     use serde_json::{json, Value};
     use tokio::net::TcpListener;
     use tokio::sync::Mutex;
     use url::Url;
 
     use super::{Auth, InternetArchiveClient};
+    #[cfg(feature = "indicatif")]
+    use super::{ChunkedBytesStream, ProgressStream, ReplayableBody};
     use crate::error::InternetArchiveError;
     use crate::metadata::{ItemMetadata, MetadataChange, MetadataTarget, PatchOperation};
     use crate::search::{SearchQuery, SortDirection};
@@ -1278,6 +1281,7 @@ mod tests {
         seen_upload_auth: Mutex<Vec<String>>,
         seen_delete_auth: Mutex<Vec<String>>,
         captured_mdapi_body: Mutex<Vec<String>>,
+        metadata_reads: Mutex<u8>,
     }
 
     fn test_client(addr: std::net::SocketAddr) -> InternetArchiveClient {
@@ -1994,5 +1998,326 @@ mod tests {
         ));
 
         server.abort();
+    }
+
+    #[cfg(feature = "indicatif")]
+    #[tokio::test]
+    async fn create_item_with_progress_handles_redirects_and_metadata_remainders() {
+        async fn metadata(State(state): State<std::sync::Arc<StateData>>) -> Json<Value> {
+            let mut reads = state.metadata_reads.lock().await;
+            let payload = if *reads < 2 {
+                json!({
+                    "files": [{"name": "demo.txt", "size": "5"}],
+                    "metadata": {
+                        "identifier": "demo-item",
+                        "title": "Demo item"
+                    }
+                })
+            } else {
+                json!({
+                    "files": [{"name": "demo.txt", "size": "5"}],
+                    "metadata": {
+                        "identifier": "demo-item",
+                        "title": "Demo item",
+                        "custom": {"nested": true}
+                    }
+                })
+            };
+            *reads += 1;
+            Json(payload)
+        }
+
+        async fn metadata_write(
+            State(state): State<std::sync::Arc<StateData>>,
+            body: String,
+        ) -> (StatusCode, Json<Value>) {
+            state.captured_mdapi_body.lock().await.push(body);
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "success": true,
+                    "task_id": 200,
+                    "log": "https://catalogd.archive.org/log/200"
+                })),
+            )
+        }
+
+        async fn first_upload() -> (StatusCode, HeaderMap) {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                LOCATION,
+                HeaderValue::from_static("/s3-redirected/demo-item/demo.txt"),
+            );
+            (StatusCode::TEMPORARY_REDIRECT, headers)
+        }
+
+        async fn redirected_upload(body: String) -> StatusCode {
+            assert_eq!(body, "hello");
+            StatusCode::OK
+        }
+
+        let state = std::sync::Arc::new(StateData::default());
+        let app = Router::new()
+            .route("/metadata/demo-item", get(metadata).post(metadata_write))
+            .route("/s3/demo-item/demo.txt", put(first_upload))
+            .route("/s3-redirected/demo-item/demo.txt", put(redirected_upload))
+            .with_state(state.clone());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = test_client(addr);
+        let identifier = ItemIdentifier::new("demo-item").unwrap();
+        let progress = ProgressBar::hidden();
+
+        client
+            .create_item_with_progress(
+                &identifier,
+                &ItemMetadata::builder()
+                    .title("Demo item")
+                    .extra_json("custom", json!({"nested": true}))
+                    .build(),
+                &UploadSpec::from_bytes("demo.txt", b"hello"),
+                &UploadOptions::default(),
+                &progress,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(progress.length(), Some(5));
+        assert_eq!(progress.position(), 5);
+        assert!(progress.is_finished());
+        assert_eq!(*state.metadata_reads.lock().await, 3);
+        assert!(state.captured_mdapi_body.lock().await[0].contains("custom"));
+
+        server.abort();
+    }
+
+    #[cfg(feature = "indicatif")]
+    #[tokio::test]
+    async fn progress_upload_reports_missing_location_foreign_redirect_and_http_errors() {
+        async fn missing_location() -> StatusCode {
+            StatusCode::TEMPORARY_REDIRECT
+        }
+
+        async fn foreign_redirect() -> (StatusCode, HeaderMap) {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                LOCATION,
+                HeaderValue::from_static("http://example.com/stolen/demo-item/foreign.bin"),
+            );
+            (StatusCode::TEMPORARY_REDIRECT, headers)
+        }
+
+        async fn failing_upload() -> (StatusCode, &'static str) {
+            (StatusCode::INTERNAL_SERVER_ERROR, "upload failed")
+        }
+
+        let app = Router::new()
+            .route("/s3/demo-item/missing-location.bin", put(missing_location))
+            .route("/s3/demo-item/foreign.bin", put(foreign_redirect))
+            .route("/s3/demo-item/failing.bin", put(failing_upload));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = test_client(addr);
+        let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+        let missing_progress = ProgressBar::hidden();
+        assert!(matches!(
+            client
+                .upload_file_with_progress(
+                    &identifier,
+                    &UploadSpec::from_bytes("missing-location.bin", b"hello"),
+                    &UploadOptions::default(),
+                    &missing_progress,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::InvalidState(message) if message.contains("missing location")
+        ));
+
+        let foreign_progress = ProgressBar::hidden();
+        assert!(matches!(
+            client
+                .upload_file_with_progress(
+                    &identifier,
+                    &UploadSpec::from_bytes("foreign.bin", b"hello"),
+                    &UploadOptions::default(),
+                    &foreign_progress,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::InvalidState(message)
+                if message.contains("redirected S3 host")
+        ));
+
+        let failing_progress = ProgressBar::hidden();
+        assert!(matches!(
+            client
+                .upload_file_with_progress(
+                    &identifier,
+                    &UploadSpec::from_bytes("failing.bin", b"hello"),
+                    &UploadOptions::default(),
+                    &failing_progress,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::Http { status, .. } if status == StatusCode::INTERNAL_SERVER_ERROR
+        ));
+
+        server.abort();
+    }
+
+    #[cfg(feature = "indicatif")]
+    #[tokio::test]
+    async fn redirect_edge_cases_are_reported_for_plain_and_progress_uploads() {
+        async fn endless_redirect() -> (StatusCode, HeaderMap) {
+            let mut headers = HeaderMap::new();
+            headers.insert(LOCATION, HeaderValue::from_static("/s3/demo-item/spin.bin"));
+            (StatusCode::TEMPORARY_REDIRECT, headers)
+        }
+
+        async fn invalid_location() -> (StatusCode, HeaderMap) {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                LOCATION,
+                HeaderValue::from_bytes(b"/s3/demo-item/\xff.bin").unwrap(),
+            );
+            (StatusCode::TEMPORARY_REDIRECT, headers)
+        }
+
+        let app = Router::new()
+            .route("/s3/demo-item/spin.bin", put(endless_redirect))
+            .route("/s3/demo-item/bad-location.bin", put(invalid_location));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = test_client(addr);
+        let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+        assert!(matches!(
+            client
+                .upload_file(
+                    &identifier,
+                    &UploadSpec::from_bytes("spin.bin", b"hello"),
+                    &UploadOptions::default(),
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::InvalidState(message) if message.contains("too many redirects")
+        ));
+        assert!(matches!(
+            client
+                .upload_file(
+                    &identifier,
+                    &UploadSpec::from_bytes("bad-location.bin", b"hello"),
+                    &UploadOptions::default(),
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::InvalidState(message)
+                if message.contains("not valid UTF-8")
+        ));
+
+        let spin_progress = ProgressBar::hidden();
+        assert!(matches!(
+            client
+                .upload_file_with_progress(
+                    &identifier,
+                    &UploadSpec::from_bytes("spin.bin", b"hello"),
+                    &UploadOptions::default(),
+                    &spin_progress,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::InvalidState(message) if message.contains("too many redirects")
+        ));
+
+        let bad_progress = ProgressBar::hidden();
+        assert!(matches!(
+            client
+                .upload_file_with_progress(
+                    &identifier,
+                    &UploadSpec::from_bytes("bad-location.bin", b"hello"),
+                    &UploadOptions::default(),
+                    &bad_progress,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::InvalidState(message)
+                if message.contains("not valid UTF-8")
+        ));
+
+        server.abort();
+    }
+
+    #[cfg(feature = "indicatif")]
+    #[tokio::test]
+    async fn download_bytes_with_progress_reports_http_errors() {
+        async fn download_error() -> (StatusCode, &'static str) {
+            (StatusCode::BAD_GATEWAY, "download failed")
+        }
+
+        let app = Router::new().route("/download/demo-item/missing.txt", get(download_error));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = test_client(addr);
+        let progress = ProgressBar::hidden();
+
+        assert!(matches!(
+            client
+                .download_bytes_with_progress(&ItemIdentifier::new("demo-item").unwrap(), "missing.txt", &progress)
+                .await
+                .unwrap_err(),
+            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY
+        ));
+
+        server.abort();
+    }
+
+    #[cfg(feature = "indicatif")]
+    #[tokio::test]
+    async fn replayable_body_apply_with_progress_sets_lengths_for_paths_and_bytes() {
+        let client = reqwest::Client::new();
+
+        let bytes_progress = ProgressBar::hidden();
+        let _bytes_request = ReplayableBody::Bytes(b"hello".to_vec())
+            .apply_with_progress(client.put("http://example.com/bytes"), &bytes_progress)
+            .await
+            .unwrap();
+        assert_eq!(bytes_progress.length(), Some(5));
+        assert_eq!(bytes_progress.position(), 0);
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("demo.txt");
+        tokio::fs::write(&path, b"hello").await.unwrap();
+
+        let path_progress = ProgressBar::hidden();
+        let _path_request = ReplayableBody::Path { path, length: 5 }
+            .apply_with_progress(client.put("http://example.com/path"), &path_progress)
+            .await
+            .unwrap();
+        assert_eq!(path_progress.length(), Some(5));
+        assert_eq!(path_progress.position(), 0);
+    }
+
+    #[cfg(feature = "indicatif")]
+    #[test]
+    fn progress_stream_and_chunked_bytes_stream_cover_poll_paths() {
+        let payload = Bytes::from_static(b"hello world");
+        let progress = ProgressBar::hidden();
+        let mut stream =
+            ProgressStream::new(ChunkedBytesStream::new(payload.clone()), progress.clone());
+        let waker = Waker::noop();
+        let mut context = Context::from_waker(waker);
+
+        let first = Pin::new(&mut stream).poll_next(&mut context);
+        assert!(matches!(first, Poll::Ready(Some(Ok(ref chunk))) if chunk == &payload));
+        assert_eq!(progress.position(), payload.len() as u64);
+
+        let second = Pin::new(&mut stream).poll_next(&mut context);
+        assert!(matches!(second, Poll::Ready(None)));
     }
 }
