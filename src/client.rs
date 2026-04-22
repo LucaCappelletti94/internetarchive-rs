@@ -1156,13 +1156,10 @@ where
         let this = self.get_mut();
         match Pin::new(&mut this.inner).poll_next(cx) {
             Poll::Ready(Some(Ok(chunk))) => {
-                let delta = match u64::try_from(chunk.len()) {
-                    Ok(delta) => delta,
-                    Err(_) => {
-                        return Poll::Ready(Some(Err(std::io::Error::other(
-                            "transfer chunk size overflow",
-                        ))));
-                    }
+                let Ok(delta) = u64::try_from(chunk.len()) else {
+                    return Poll::Ready(Some(Err(std::io::Error::other(
+                        "transfer chunk size overflow",
+                    ))));
                 };
                 this.progress.inc(delta);
                 Poll::Ready(Some(Ok(chunk)))
