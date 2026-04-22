@@ -1281,6 +1281,7 @@ mod tests {
         seen_upload_auth: Mutex<Vec<String>>,
         seen_delete_auth: Mutex<Vec<String>>,
         captured_mdapi_body: Mutex<Vec<String>>,
+        #[cfg(feature = "indicatif")]
         metadata_reads: Mutex<u8>,
     }
 
@@ -1689,9 +1690,9 @@ mod tests {
         ));
 
         let poll = PollOptions {
-            max_wait: Duration::from_millis(100),
-            initial_delay: Duration::from_millis(1),
-            max_delay: Duration::from_millis(2),
+            max_wait: Duration::from_secs(1),
+            initial_delay: Duration::from_millis(5),
+            max_delay: Duration::from_millis(10),
         };
         let endpoint = Endpoint::custom(
             Url::parse("http://localhost:3000/archive").unwrap(),
