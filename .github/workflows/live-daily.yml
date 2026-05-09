@@ -69,5 +69,11 @@ jobs:
           test -n "$INTERNET_ARCHIVE_ACCESS_KEY" || { echo "Missing INTERNET_ARCHIVE_ACCESS_KEY secret"; exit 1; }
           test -n "$INTERNET_ARCHIVE_SECRET_KEY" || { echo "Missing INTERNET_ARCHIVE_SECRET_KEY secret"; exit 1; }
 
+      - name: Install official Internet Archive Python client
+        run: python3 -m pip install --user --upgrade internetarchive
+
+      - name: Probe live create with official Python client
+        run: python3 scripts/live_ia_python_probe.py
+
       - name: Run live full API suite
         run: cargo test --test live_smoke --all-features --locked -- --nocapture --test-threads=1
