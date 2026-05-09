@@ -769,17 +769,6 @@ impl InternetArchiveClient {
             identifier.validate_for_bucket_creation()?;
         }
 
-        let body = match &spec.source {
-            UploadSource::Path(path) => {
-                let length = tokio::fs::metadata(path).await?.len();
-                ReplayableBody::Path {
-                    path: path.clone(),
-                    length,
-                }
-            }
-            UploadSource::Bytes(bytes) => ReplayableBody::Bytes(bytes.clone()),
-        };
-
         let mut headers = HeaderMap::new();
         headers.insert(
             CONTENT_TYPE,
@@ -790,11 +779,11 @@ impl InternetArchiveClient {
 
         if auto_make_bucket {
             headers.insert("x-archive-auto-make-bucket", HeaderValue::from_static("1"));
+            headers.insert("x-amz-auto-make-bucket", HeaderValue::from_static("1"));
         }
-        headers.insert(
-            "x-archive-queue-derive",
-            HeaderValue::from_static(if options.skip_derive { "0" } else { "1" }),
-        );
+        if options.skip_derive {
+            headers.insert("x-archive-queue-derive", HeaderValue::from_static("0"));
+        }
         if options.keep_old_version {
             headers.insert("x-archive-keep-old-version", HeaderValue::from_static("1"));
         }
@@ -804,12 +793,14 @@ impl InternetArchiveClient {
                 HeaderValue::from_static("1"),
             );
         }
-        let size_hint = options.size_hint.unwrap_or_else(|| body.content_length());
-        headers.insert(
-            "x-archive-size-hint",
-            HeaderValue::from_str(&size_hint.to_string())
-                .map_err(|_| InternetArchiveError::InvalidState("invalid size hint".to_owned()))?,
-        );
+        if let Some(size_hint) = options.size_hint {
+            headers.insert(
+                "x-archive-size-hint",
+                HeaderValue::from_str(&size_hint.to_string()).map_err(|_| {
+                    InternetArchiveError::InvalidState("invalid size hint".to_owned())
+                })?,
+            );
+        }
         if let Some(metadata) = metadata {
             for (name, value) in metadata.headers {
                 let name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
@@ -825,6 +816,17 @@ impl InternetArchiveClient {
                 );
             }
         }
+
+        let body = match &spec.source {
+            UploadSource::Path(path) => {
+                let length = tokio::fs::metadata(path).await?.len();
+                ReplayableBody::Path {
+                    path: path.clone(),
+                    length,
+                }
+            }
+            UploadSource::Bytes(bytes) => ReplayableBody::Bytes(bytes.clone()),
+        };
 
         let url = self
             .endpoint
@@ -1083,13 +1085,6 @@ enum ReplayableBody {
 }
 
 impl ReplayableBody {
-    fn content_length(&self) -> u64 {
-        match self {
-            Self::Path { length, .. } => *length,
-            Self::Bytes(bytes) => bytes.len() as u64,
-        }
-    }
-
     async fn apply(
         &self,
         request: reqwest::RequestBuilder,
