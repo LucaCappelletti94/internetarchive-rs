@@ -73,7 +73,20 @@ jobs:
         run: python3 -m pip install --user --upgrade internetarchive
 
       - name: Probe live create with official Python client
-        run: python3 scripts/live_ia_python_probe.py
+        id: official-client-probe
+        shell: bash
+        run: |
+          set +e
+          python3 scripts/live_ia_python_probe.py
+          status=$?
+          set -e
+          if [ "$status" -eq 77 ]; then
+            echo "skip-live-suite=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::Official Internet Archive client cannot create generated live-test identifiers with these credentials; skipping Rust live suite."
+            exit 0
+          fi
+          exit "$status"
 
       - name: Run live full API suite
+        if: steps.official-client-probe.outputs.skip-live-suite != 'true'
         run: cargo test --test live_smoke --all-features --locked -- --nocapture --test-threads=1

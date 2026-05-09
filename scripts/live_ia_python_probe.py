@@ -17,12 +17,14 @@ import time
 from pathlib import Path
 
 import internetarchive
+from requests import HTTPError
 
 
 ACCESS_KEY_ENV = "INTERNET_ARCHIVE_ACCESS_KEY"
 SECRET_KEY_ENV = "INTERNET_ARCHIVE_SECRET_KEY"
 TEST_COLLECTION = "test_collection"
 LIVE_IDENTIFIER_PREFIX = "internetarchiversprobe"
+BUCKET_PERMISSION_HINT = "this user may lack the special permission"
 
 
 def required_env(name: str) -> str:
@@ -98,18 +100,36 @@ def main() -> int:
                 file=sys.stderr,
             )
             response = getattr(error, "response", None)
+            response_text = ""
             if response is not None:
+                response_text = response.text
                 print(f"official_client_probe_status={response.status_code}", file=sys.stderr)
                 print(
-                    f"official_client_probe_body={response.text[:2000]}",
+                    f"official_client_probe_body={response_text[:2000]}",
                     file=sys.stderr,
                 )
+            if is_account_identifier_permission_failure(error, response_text):
+                print(
+                    "official_client_probe_skip_reason="
+                    "account cannot create generated live-test identifiers",
+                    file=sys.stderr,
+                )
+                return 77
             raise
 
     statuses = [getattr(response, "status_code", None) for response in responses]
     print(f"official_client_probe_statuses={statuses}")
     print(f"official_client_probe_created={identifier}")
     return 0
+
+
+def is_account_identifier_permission_failure(error: Exception, response_text: str) -> bool:
+    if not isinstance(error, HTTPError):
+        return False
+    response = getattr(error, "response", None)
+    if response is None or response.status_code != 400:
+        return False
+    return "InvalidBucketName" in response_text and BUCKET_PERMISSION_HINT in response_text
 
 
 if __name__ == "__main__":
