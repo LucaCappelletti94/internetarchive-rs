@@ -20,25 +20,25 @@ rustls-tls = ["reqwest/rustls"]
 indicatif = ["dep:futures-core", "dep:indicatif"]
 
 [dependencies]
-bytes = "1.10"
+bytes = "1.11"
 client-uploader-traits = "0.1.0"
 futures-core = { version = "0.3", optional = true }
-indicatif = { version = "0.17", optional = true }
-json-patch = "4.1"
+indicatif = { version = "0.18", optional = true }
+json-patch = "4.2"
 mime = "0.3"
 mime_guess = "2.0"
 percent-encoding = "2.3"
-quick-xml = { version = "0.39.2", features = ["serialize"] }
-reqwest = { version = "0.13.2", default-features = false, features = ["form", "json", "query", "stream"] }
+quick-xml = { version = "0.39.4", features = ["serialize"] }
+reqwest = { version = "0.13.3", default-features = false, features = ["form", "json", "query", "stream"] }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.44", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.52", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = { version = "0.7", features = ["io"] }
 url = { version = "2.5", features = ["serde"] }
 
 [dev-dependencies]
 axum = "0.8"
 http-body-util = "0.1"
-tempfile = "3.20"
+tempfile = "3.27"
