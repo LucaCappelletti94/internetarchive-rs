@@ -779,6 +779,7 @@ impl InternetArchiveClient {
 
         if auto_make_bucket {
             headers.insert("x-archive-auto-make-bucket", HeaderValue::from_static("1"));
+            headers.insert("x-amz-auto-make-bucket", HeaderValue::from_static("1"));
         }
         if options.skip_derive {
             headers.insert("x-archive-queue-derive", HeaderValue::from_static("0"));

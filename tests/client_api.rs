@@ -272,6 +272,13 @@ async fn low_level_client_methods_cover_success_paths() {
         "1"
     );
     assert_eq!(
+        create_request
+            .headers
+            .get("x-amz-auto-make-bucket")
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
         create_request.headers.get("x-archive-meta-title").unwrap(),
         "Seed file"
     );
