@@ -14,22 +14,11 @@ use internetarchive_rs::{
 use tempfile::tempdir;
 
 static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
-const MAX_LIVE_LABEL_LEN: usize = 16;
+const MAX_LIVE_LABEL_LEN: usize = 12;
 
-fn base36(mut value: u128) -> String {
-    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
-
-    if value == 0 {
-        return String::from("0");
-    }
-
-    let mut encoded = Vec::new();
-    while value > 0 {
-        let digit = usize::try_from(value % 36).expect("base36 digit fits usize");
-        encoded.push(char::from(DIGITS[digit]));
-        value /= 36;
-    }
-    encoded.iter().rev().collect()
+fn fixed_width_decimal(value: u128, modulo: u128, width: usize) -> String {
+    let bounded = value % modulo;
+    format!("{bounded:0width$}")
 }
 
 fn normalize_live_label(label: &str) -> String {
@@ -64,13 +53,15 @@ fn live_identifier_from_parts(
     run_attempt: &str,
 ) -> ItemIdentifier {
     let label = normalize_live_label(label);
-    let timestamp = base36(timestamp_nanos);
+    let timestamp = fixed_width_decimal(timestamp_nanos, 10_000_000_000_000_000, 16);
+    let process = fixed_width_decimal(u128::from(process_id), 100_000, 5);
+    let counter_index = fixed_width_decimal(u128::from(counter), 100_000, 5);
 
     let mut hasher = DefaultHasher::new();
     (run_id, run_attempt, timestamp_nanos, counter, process_id).hash(&mut hasher);
-    let entropy = base36(u128::from(hasher.finish()));
+    let entropy = fixed_width_decimal(u128::from(hasher.finish()), 1_000_000, 6);
 
-    let identifier = format!("rslive{label}{timestamp}{entropy}");
+    let identifier = format!("iarustclient{label}{timestamp}{process}{counter_index}{entropy}");
     assert!(
         identifier.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
         "generated live identifier is too long: {identifier}"
@@ -206,7 +197,7 @@ async fn publish_with_fresh_identifier(
 
     for attempt in 0..max_attempts {
         let identifier = unique_identifier("live-workflow");
-        let mut request = PublishRequest::new(
+        let request = PublishRequest::new(
             identifier.clone(),
             ItemMetadata::builder()
                 .mediatype(MediaType::Texts)
@@ -220,7 +211,6 @@ async fn publish_with_fresh_identifier(
                 .build(),
             vec![UploadSpec::from_path(artifact_path).expect("publish artifact")],
         );
-        request.upload_options.skip_derive = true;
 
         match client.publish_item(request).await {
             Ok(outcome) => {
@@ -380,10 +370,7 @@ async fn live_low_level_client_api_round_trip() {
         .license_url("https://creativecommons.org/licenses/by/4.0/")
         .build();
 
-    let create_options = UploadOptions {
-        skip_derive: true,
-        ..UploadOptions::default()
-    };
+    let create_options = UploadOptions::default();
 
     let _limit = client
         .check_upload_limit(&identifier)
