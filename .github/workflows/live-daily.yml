@@ -82,7 +82,13 @@ jobs:
           set -e
           if [ "$status" -eq 77 ]; then
             echo "skip-live-suite=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Official Internet Archive client cannot create generated live-test identifiers with these credentials; skipping Rust live suite."
+            echo "Official Internet Archive client cannot create generated live-test identifiers with these credentials; skipping Rust live suite."
+            {
+              echo "### Rust live suite skipped"
+              echo
+              echo "The official Internet Archive Python client cannot create generated live-test identifiers with these credentials."
+              echo "This indicates an Internet Archive account permission/precondition issue rather than a Rust client regression."
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           exit "$status"
