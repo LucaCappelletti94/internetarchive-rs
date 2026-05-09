@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::missing_panics_doc, clippy::unwrap_used)]
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +14,70 @@ use internetarchive_rs::{
 use tempfile::tempdir;
 
 static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+const MAX_LIVE_LABEL_LEN: usize = 16;
+
+fn base36(mut value: u128) -> String {
+    const DIGITS: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+    if value == 0 {
+        return String::from("0");
+    }
+
+    let mut encoded = Vec::new();
+    while value > 0 {
+        let digit = usize::try_from(value % 36).expect("base36 digit fits usize");
+        encoded.push(char::from(DIGITS[digit]));
+        value /= 36;
+    }
+    encoded.iter().rev().collect()
+}
+
+fn normalize_live_label(label: &str) -> String {
+    let mut normalized = String::new();
+    for character in label.chars() {
+        if normalized.len() >= MAX_LIVE_LABEL_LEN {
+            break;
+        }
+
+        match character {
+            character if character.is_ascii_alphanumeric() => {
+                normalized.push(character.to_ascii_lowercase());
+            }
+            '-' | '_' => normalized.push('-'),
+            _ => {}
+        }
+    }
+
+    let trimmed = normalized.trim_matches('-');
+    if trimmed.is_empty() {
+        String::from("live")
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+fn live_identifier_from_parts(
+    label: &str,
+    timestamp_nanos: u128,
+    counter: u64,
+    process_id: u32,
+    run_id: &str,
+    run_attempt: &str,
+) -> ItemIdentifier {
+    let label = normalize_live_label(label);
+    let timestamp = base36(timestamp_nanos);
+
+    let mut hasher = DefaultHasher::new();
+    (run_id, run_attempt, timestamp_nanos, counter, process_id).hash(&mut hasher);
+    let entropy = base36(u128::from(hasher.finish()));
+
+    let identifier = format!("iars-{label}-{timestamp}-{entropy}");
+    assert!(
+        identifier.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
+        "generated live identifier is too long: {identifier}"
+    );
+    ItemIdentifier::new(identifier).expect("valid identifier")
+}
 
 fn unique_identifier(label: &str) -> ItemIdentifier {
     let timestamp = SystemTime::now()
@@ -21,15 +87,41 @@ fn unique_identifier(label: &str) -> ItemIdentifier {
     let counter = UNIQUE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
     let run_id = std::env::var("GITHUB_RUN_ID").unwrap_or_else(|_| String::from("local"));
     let run_attempt = std::env::var("GITHUB_RUN_ATTEMPT").unwrap_or_else(|_| String::from("0"));
-    ItemIdentifier::new(format!(
-        "internetarchive-rs-{label}-{run_id}-{run_attempt}-{timestamp}-{counter}-{}",
+    live_identifier_from_parts(
+        label,
+        timestamp,
+        counter,
         std::process::id(),
-    ))
-    .expect("valid identifier")
+        &run_id,
+        &run_attempt,
+    )
 }
 
 fn live_credentials() -> Option<Auth> {
     Auth::from_env().ok()
+}
+
+#[test]
+fn generated_live_identifiers_are_bucket_safe() {
+    let run_id = "github-run-id-with-extra-punctuation/and-uppercase".repeat(8);
+    let run_attempt = "attempt-with-extra-punctuation/and-uppercase".repeat(8);
+    let identifier = live_identifier_from_parts(
+        "live_workflow_with_a_long_label",
+        u128::MAX,
+        u64::MAX,
+        u32::MAX,
+        &run_id,
+        &run_attempt,
+    );
+    let raw = identifier.as_str();
+
+    assert!(
+        raw.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
+        "{raw}"
+    );
+    identifier
+        .validate_for_bucket_creation()
+        .expect("bucket-safe live ID");
 }
 
 async fn wait_for_item_file(

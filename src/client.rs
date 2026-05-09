@@ -510,8 +510,9 @@ impl InternetArchiveClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the client has no credentials, the request fails, or
-    /// IA rejects the upload.
+    /// Returns an error if the identifier is not valid for IA-S3 bucket
+    /// creation, the client has no credentials, the request fails, or IA
+    /// rejects the upload.
     pub async fn create_item(
         &self,
         identifier: &ItemIdentifier,
@@ -541,8 +542,9 @@ impl InternetArchiveClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the client has no credentials, the request fails, or
-    /// IA rejects the upload.
+    /// Returns an error if the identifier is not valid for IA-S3 bucket
+    /// creation, the client has no credentials, the request fails, or IA
+    /// rejects the upload.
     #[cfg(feature = "indicatif")]
     pub async fn create_item_with_progress(
         &self,
@@ -763,6 +765,10 @@ impl InternetArchiveClient {
         metadata: Option<HeaderEncoding>,
         auto_make_bucket: bool,
     ) -> Result<(Url, HeaderMap, ReplayableBody), InternetArchiveError> {
+        if auto_make_bucket {
+            identifier.validate_for_bucket_creation()?;
+        }
+
         let mut headers = HeaderMap::new();
         headers.insert(
             CONTENT_TYPE,
@@ -1252,7 +1258,7 @@ mod tests {
     use std::time::Duration;
 
     use axum::extract::State;
-    use axum::http::{HeaderMap, HeaderValue, StatusCode};
+    use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
     use axum::routing::{get, put};
     use axum::{Json, Router};
     #[cfg(feature = "indicatif")]
@@ -1273,7 +1279,7 @@ mod tests {
     use crate::metadata::{ItemMetadata, MetadataChange, MetadataTarget, PatchOperation};
     use crate::search::{SearchQuery, SortDirection};
     use crate::upload::{DeleteOptions, UploadOptions, UploadSpec};
-    use crate::{Endpoint, ItemIdentifier, PollOptions};
+    use crate::{Endpoint, IdentifierError, ItemIdentifier, PollOptions};
     use reqwest::header::LOCATION;
 
     #[derive(Default)]
@@ -1997,6 +2003,98 @@ mod tests {
             .unwrap_err(),
             InternetArchiveError::Http { status, .. } if status == StatusCode::INTERNAL_SERVER_ERROR
         ));
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn s3_create_helpers_reject_bucket_unsafe_identifiers_before_network_access() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = test_client(listener.local_addr().unwrap());
+        let spec = UploadSpec::from_bytes("demo.txt", b"hello");
+        let options = UploadOptions::default();
+        let too_long =
+            ItemIdentifier::new("a".repeat(ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN + 1)).unwrap();
+        let uppercase = ItemIdentifier::new("Demo-item").unwrap();
+
+        assert!(matches!(
+            client
+                .create_item(
+                    &too_long,
+                    &ItemMetadata::builder().title("Demo").build(),
+                    &spec,
+                    &options,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::Identifier(IdentifierError::TooLongForBucketCreation {
+                max: ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            client
+                .create_item(
+                    &uppercase,
+                    &ItemMetadata::builder().title("Demo").build(),
+                    &spec,
+                    &options,
+                )
+                .await
+                .unwrap_err(),
+            InternetArchiveError::Identifier(IdentifierError::InvalidBucketCreationCharacter {
+                character: 'D',
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn existing_item_s3_helpers_and_limit_check_allow_documented_non_bucket_creation_identifiers(
+    ) {
+        async fn upload() -> StatusCode {
+            StatusCode::OK
+        }
+
+        async fn delete() -> StatusCode {
+            StatusCode::NO_CONTENT
+        }
+
+        async fn limit_check(uri: Uri) -> Json<Value> {
+            let query = uri.query().unwrap();
+            assert!(query.contains("check_limit=1"));
+            assert!(query.contains("accesskey=access"));
+            assert!(query.contains("bucket=Demo_Item"));
+            Json(json!({
+                "bucket": "Demo_Item",
+                "accesskey": "access",
+                "over_limit": 0,
+            }))
+        }
+
+        let app = Router::new()
+            .route("/s3/", get(limit_check))
+            .route("/s3/Demo_Item/demo.txt", put(upload).delete(delete));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = test_client(addr);
+        let identifier = ItemIdentifier::new("Demo_Item").unwrap();
+        let spec = UploadSpec::from_bytes("demo.txt", b"hello");
+
+        client
+            .upload_file(&identifier, &spec, &UploadOptions::default())
+            .await
+            .unwrap();
+        client
+            .delete_file(&identifier, "demo.txt", &DeleteOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(
+            client.check_upload_limit(&identifier).await.unwrap().bucket,
+            "Demo_Item"
+        );
 
         server.abort();
     }

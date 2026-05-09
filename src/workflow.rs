@@ -60,12 +60,15 @@ impl InternetArchiveClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if the item already exists, the request has no files, or
-    /// any network step fails.
+    /// Returns an error if the identifier is not valid for IA-S3 bucket
+    /// creation, the item already exists, the request has no files, or any
+    /// network step fails.
     pub async fn publish_item(
         &self,
         request: PublishRequest,
     ) -> Result<PublishOutcome, InternetArchiveError> {
+        request.identifier.validate_for_bucket_creation()?;
+
         match self.get_item(&request.identifier).await {
             Ok(_) => Err(InternetArchiveError::InvalidState(format!(
                 "item {} already exists",
@@ -82,7 +85,9 @@ impl InternetArchiveClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if any required network step fails.
+    /// Returns an error if the identifier is not valid for IA-S3 bucket
+    /// creation when a new item must be created, or if any required network
+    /// step fails.
     pub async fn upsert_item(
         &self,
         request: PublishRequest,
@@ -203,7 +208,7 @@ mod tests {
     use crate::error::InternetArchiveError;
     use crate::metadata::{ItemMetadata, MediaType};
     use crate::upload::UploadSpec;
-    use crate::ItemIdentifier;
+    use crate::{IdentifierError, ItemIdentifier};
 
     #[test]
     fn publish_request_defaults_are_sensible() {
@@ -236,6 +241,24 @@ mod tests {
         assert!(
             matches!(error, InternetArchiveError::InvalidState(message) if message.contains("at least one upload"))
         );
+    }
+
+    #[tokio::test]
+    async fn publish_rejects_bucket_unsafe_identifiers_before_lookup() {
+        let client = InternetArchiveClient::new().unwrap();
+        let request = PublishRequest::new(
+            ItemIdentifier::new("Demo-item").unwrap(),
+            ItemMetadata::builder().title("Demo").build(),
+            vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+        );
+
+        assert!(matches!(
+            client.publish_item(request).await.unwrap_err(),
+            InternetArchiveError::Identifier(IdentifierError::InvalidBucketCreationCharacter {
+                character: 'D',
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
