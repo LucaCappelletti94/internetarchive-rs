@@ -9,7 +9,6 @@ tries the same operation.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
@@ -23,6 +22,7 @@ import internetarchive
 ACCESS_KEY_ENV = "INTERNET_ARCHIVE_ACCESS_KEY"
 SECRET_KEY_ENV = "INTERNET_ARCHIVE_SECRET_KEY"
 TEST_COLLECTION = "test_collection"
+LIVE_IDENTIFIER_PREFIX = "internetarchiversprobe"
 
 
 def required_env(name: str) -> str:
@@ -33,16 +33,9 @@ def required_env(name: str) -> str:
 
 
 def live_identifier() -> str:
-    seed = ":".join(
-        [
-            os.environ.get("GITHUB_RUN_ID", "local"),
-            os.environ.get("GITHUB_RUN_ATTEMPT", "0"),
-            str(os.getpid()),
-            str(time.time_ns()),
-        ]
-    )
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:12]
-    return f"iarustclientprobe{int(time.time())}{digest}"
+    timestamp = int(time.time()) % 10_000_000_000
+    process = os.getpid() % 10_000
+    return f"{LIVE_IDENTIFIER_PREFIX}{timestamp:010d}{process:04d}"
 
 
 def sanitized_headers(headers: dict[str, str]) -> dict[str, str]:

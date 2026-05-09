@@ -1,7 +1,5 @@
 #![allow(clippy::expect_used, clippy::missing_panics_doc, clippy::unwrap_used)]
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -16,8 +14,9 @@ use tempfile::tempdir;
 static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MAX_LIVE_LABEL_LEN: usize = 12;
 const LIVE_TEST_COLLECTION: &str = "test_collection";
+const LIVE_IDENTIFIER_PREFIX: &str = "internetarchivers";
 
-fn fixed_width_decimal(value: u128, modulo: u128, width: usize) -> String {
+fn fixed_width_decimal(value: u64, modulo: u64, width: usize) -> String {
     let bounded = value % modulo;
     format!("{bounded:0width$}")
 }
@@ -45,24 +44,12 @@ fn normalize_live_label(label: &str) -> String {
     }
 }
 
-fn live_identifier_from_parts(
-    label: &str,
-    timestamp_nanos: u128,
-    counter: u64,
-    process_id: u32,
-    run_id: &str,
-    run_attempt: &str,
-) -> ItemIdentifier {
+fn live_identifier_from_parts(label: &str, timestamp_seconds: u64, counter: u64) -> ItemIdentifier {
     let label = normalize_live_label(label);
-    let timestamp = fixed_width_decimal(timestamp_nanos, 10_000_000_000_000_000, 16);
-    let process = fixed_width_decimal(u128::from(process_id), 100_000, 5);
-    let counter_index = fixed_width_decimal(u128::from(counter), 100_000, 5);
+    let timestamp = fixed_width_decimal(timestamp_seconds, 10_000_000_000, 10);
+    let counter_index = fixed_width_decimal(counter, 10_000, 4);
 
-    let mut hasher = DefaultHasher::new();
-    (run_id, run_attempt, timestamp_nanos, counter, process_id).hash(&mut hasher);
-    let entropy = fixed_width_decimal(u128::from(hasher.finish()), 1_000_000, 6);
-
-    let identifier = format!("iarustclient{label}{timestamp}{process}{counter_index}{entropy}");
+    let identifier = format!("{LIVE_IDENTIFIER_PREFIX}{label}{timestamp}{counter_index}");
     assert!(
         identifier.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
         "generated live identifier is too long: {identifier}"
@@ -78,18 +65,9 @@ fn unique_identifier(label: &str) -> ItemIdentifier {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("system time after epoch")
-        .as_nanos();
+        .as_secs();
     let counter = UNIQUE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let run_id = std::env::var("GITHUB_RUN_ID").unwrap_or_else(|_| String::from("local"));
-    let run_attempt = std::env::var("GITHUB_RUN_ATTEMPT").unwrap_or_else(|_| String::from("0"));
-    live_identifier_from_parts(
-        label,
-        timestamp,
-        counter,
-        std::process::id(),
-        &run_id,
-        &run_attempt,
-    )
+    live_identifier_from_parts(label, timestamp, counter)
 }
 
 fn live_credentials() -> Option<Auth> {
@@ -98,16 +76,8 @@ fn live_credentials() -> Option<Auth> {
 
 #[test]
 fn generated_live_identifiers_are_bucket_safe() {
-    let run_id = "github-run-id-with-extra-punctuation/and-uppercase".repeat(8);
-    let run_attempt = "attempt-with-extra-punctuation/and-uppercase".repeat(8);
-    let identifier = live_identifier_from_parts(
-        "live_workflow_with_a_long_label",
-        u128::MAX,
-        u64::MAX,
-        u32::MAX,
-        &run_id,
-        &run_attempt,
-    );
+    let identifier =
+        live_identifier_from_parts("live_workflow_with_a_long_label", u64::MAX, u64::MAX);
     let raw = identifier.as_str();
 
     assert!(
