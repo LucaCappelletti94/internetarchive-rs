@@ -15,6 +15,7 @@ use tempfile::tempdir;
 
 static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MAX_LIVE_LABEL_LEN: usize = 12;
+const LIVE_TEST_COLLECTION: &str = "test_collection";
 
 fn fixed_width_decimal(value: u128, modulo: u128, width: usize) -> String {
     let bounded = value % modulo;
@@ -206,7 +207,7 @@ async fn publish_with_fresh_identifier(
                     identifier.as_str()
                 ))
                 .description_html("<p>internetarchive-rs workflow helper test</p>")
-                .collection("opensource")
+                .collection(LIVE_TEST_COLLECTION)
                 .language("eng")
                 .build(),
             vec![UploadSpec::from_path(artifact_path).expect("publish artifact")],
@@ -363,7 +364,7 @@ async fn live_low_level_client_api_round_trip() {
             identifier.as_str()
         ))
         .description_html("<p>internetarchive-rs live full API test</p>")
-        .collection("opensource")
+        .collection(LIVE_TEST_COLLECTION)
         .creator("internetarchive-rs")
         .subject("live-api")
         .language("eng")
