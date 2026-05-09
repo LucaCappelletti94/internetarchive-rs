@@ -176,18 +176,19 @@ impl ItemMetadata {
 
         for (key, value) in &self.0 {
             match value {
-                Value::String(text) => headers.push((header_name(key, None), header_value(text))),
+                Value::String(text) => {
+                    headers.push((header_name(key, Some(0)), header_value(text)));
+                }
                 Value::Array(values) => {
                     let strings = values.iter().map(Value::as_str).collect::<Option<Vec<_>>>();
                     if let Some(strings) = strings {
                         if strings.len() <= 1 {
                             if let Some(value) = strings.first() {
-                                headers.push((header_name(key, None), header_value(value)));
+                                headers.push((header_name(key, Some(0)), header_value(value)));
                             }
                         } else {
                             for (index, value) in strings.into_iter().enumerate() {
-                                headers
-                                    .push((header_name(key, Some(index + 1)), header_value(value)));
+                                headers.push((header_name(key, Some(index)), header_value(value)));
                             }
                         }
                     } else {
@@ -699,6 +700,18 @@ mod tests {
 
         let encoding = metadata.as_header_encoding();
         assert_eq!(encoding.headers.len(), 4);
+        assert!(encoding
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-archive-meta00-collection" && value == "opensource"));
+        assert!(encoding
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-archive-meta01-collection" && value == "community"));
+        assert!(encoding
+            .headers
+            .iter()
+            .any(|(name, value)| name == "x-archive-meta00-title" && value == "Demo"));
         assert_eq!(
             encoding.remainder.get("custom").unwrap(),
             &serde_json::json!({"nested": true})
@@ -724,7 +737,7 @@ mod tests {
         assert!(encoding
             .headers
             .iter()
-            .any(|(name, value)| name == "x-archive-meta-single" && value == "only"));
+            .any(|(name, value)| name == "x-archive-meta00-single" && value == "only"));
         assert_eq!(encoding.remainder.get("mixed").unwrap(), &json!([1, 2, 3]));
     }
 

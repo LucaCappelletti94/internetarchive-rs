@@ -139,9 +139,10 @@ async fn publish_item_creates_item_and_patches_non_header_metadata() {
         upload.headers.get("x-archive-auto-make-bucket").unwrap(),
         "1"
     );
-    assert_eq!(upload.headers.get("x-amz-auto-make-bucket").unwrap(), "1");
+    assert_eq!(upload.headers.get("x-archive-queue-derive").unwrap(), "1");
+    assert_eq!(upload.headers.get("x-archive-size-hint").unwrap(), "5");
     assert_eq!(
-        upload.headers.get("x-archive-meta-title").unwrap(),
+        upload.headers.get("x-archive-meta00-title").unwrap(),
         "Demo item"
     );
 

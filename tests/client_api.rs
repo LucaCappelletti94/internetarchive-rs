@@ -274,18 +274,25 @@ async fn low_level_client_methods_cover_success_paths() {
     assert_eq!(
         create_request
             .headers
-            .get("x-amz-auto-make-bucket")
+            .get("x-archive-queue-derive")
             .unwrap(),
         "1"
     );
     assert_eq!(
-        create_request.headers.get("x-archive-meta-title").unwrap(),
+        create_request.headers.get("x-archive-size-hint").unwrap(),
+        "9"
+    );
+    assert_eq!(
+        create_request
+            .headers
+            .get("x-archive-meta00-title")
+            .unwrap(),
         "Seed file"
     );
     assert_eq!(
         create_request
             .headers
-            .get("x-archive-meta-licenseurl")
+            .get("x-archive-meta00-licenseurl")
             .unwrap(),
         "https://creativecommons.org/licenses/by/4.0/"
     );
