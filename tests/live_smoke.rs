@@ -43,16 +43,15 @@ fn normalize_live_label(label: &str) -> String {
             character if character.is_ascii_alphanumeric() => {
                 normalized.push(character.to_ascii_lowercase());
             }
-            '-' | '_' => normalized.push('-'),
+            '-' | '_' => {}
             _ => {}
         }
     }
 
-    let trimmed = normalized.trim_matches('-');
-    if trimmed.is_empty() {
+    if normalized.is_empty() {
         String::from("live")
     } else {
-        trimmed.to_owned()
+        normalized
     }
 }
 
@@ -71,12 +70,16 @@ fn live_identifier_from_parts(
     (run_id, run_attempt, timestamp_nanos, counter, process_id).hash(&mut hasher);
     let entropy = base36(u128::from(hasher.finish()));
 
-    let identifier = format!("iars-{label}-{timestamp}-{entropy}");
+    let identifier = format!("rslive{label}{timestamp}{entropy}");
     assert!(
         identifier.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
         "generated live identifier is too long: {identifier}"
     );
-    ItemIdentifier::new(identifier).expect("valid identifier")
+    let identifier = ItemIdentifier::new(identifier).expect("valid identifier");
+    identifier
+        .validate_for_bucket_creation()
+        .expect("bucket-safe identifier");
+    identifier
 }
 
 fn unique_identifier(label: &str) -> ItemIdentifier {
@@ -117,6 +120,11 @@ fn generated_live_identifiers_are_bucket_safe() {
 
     assert!(
         raw.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
+        "{raw}"
+    );
+    assert!(
+        raw.chars()
+            .all(|character| character.is_ascii_lowercase() || character.is_ascii_digit()),
         "{raw}"
     );
     identifier
@@ -221,7 +229,7 @@ async fn publish_with_fresh_identifier(
             }
             Err(InternetArchiveError::InvalidState(message))
                 if message.contains("already exists") && attempt + 1 < max_attempts => {}
-            Err(error) => panic!("publish item: {error}"),
+            Err(error) => panic!("publish item {}: {error}", identifier.as_str()),
         }
     }
 
@@ -389,7 +397,7 @@ async fn live_low_level_client_api_round_trip() {
             &create_options,
         )
         .await
-        .expect("create item");
+        .unwrap_or_else(|error| panic!("create item {}: {error}", identifier.as_str()));
 
     wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
     assert!(client
