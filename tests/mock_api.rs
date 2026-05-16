@@ -326,3 +326,72 @@ async fn upsert_item_creates_missing_items_and_backfills_stale_metadata_projecti
     let body = String::from_utf8(patch.body.clone()).unwrap();
     assert!(body.contains("Backfilled+title") || body.contains("Backfilled%20title"));
 }
+
+#[tokio::test]
+async fn upsert_item_does_not_emit_collection_removal_when_archive_returns_superset_list() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    let superset_metadata = serde_json::json!({
+        "files": [{"name": "demo.txt", "size": "5"}],
+        "metadata": {
+            "identifier": "demo-item",
+            "mediatype": "texts",
+            "title": "Demo item",
+            "collection": ["test_collection", "internetarchivebooks"]
+        }
+    });
+    for _ in 0..3 {
+        server.enqueue_json(
+            Method::GET,
+            "/metadata/demo-item",
+            StatusCode::OK,
+            superset_metadata.clone(),
+        );
+    }
+
+    let mut request = PublishRequest::new(
+        identifier.clone(),
+        ItemMetadata::builder()
+            .mediatype(MediaType::Texts)
+            .title("Demo item")
+            .collection("test_collection")
+            .build(),
+        vec![UploadSpec::from_bytes("demo.txt", b"hello".to_vec())],
+    );
+    request.conflict_policy = FileConflictPolicy::Skip;
+
+    let outcome = client.upsert_item(request).await.unwrap();
+
+    assert!(!outcome.created);
+    assert_eq!(outcome.skipped_files, vec!["demo.txt".to_owned()]);
+    assert!(!outcome.metadata_changed);
+    assert_eq!(
+        outcome.item.metadata.collections().unwrap(),
+        vec![
+            "test_collection".to_owned(),
+            "internetarchivebooks".to_owned(),
+        ]
+    );
+
+    let requests = server.requests();
+    assert!(
+        !requests
+            .iter()
+            .any(|request| request.method == Method::POST),
+        "metadata POST should not be issued when stored collection is a superset; saw {:?}",
+        requests
+            .iter()
+            .filter(|request| request.method == Method::POST)
+            .map(|request| (
+                request.path.clone(),
+                String::from_utf8_lossy(&request.body).into_owned()
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !requests.iter().any(|request| request.method == Method::PUT),
+        "no upload should be attempted under Skip policy"
+    );
+}

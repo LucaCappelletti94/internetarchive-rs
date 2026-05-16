@@ -1,6 +1,6 @@
 //! Flexible metadata wrappers and JSON Patch helpers.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -209,10 +209,24 @@ impl ItemMetadata {
 
 pub(crate) fn metadata_contains_projection(actual: &ItemMetadata, expected: &ItemMetadata) -> bool {
     expected.as_map().iter().all(|(key, expected_value)| {
-        actual
-            .get(key)
-            .is_some_and(|actual_value| metadata_values_match(actual_value, expected_value))
+        actual.get(key).is_some_and(|actual_value| {
+            metadata_value_contains_projection(actual_value, expected_value)
+        })
     })
+}
+
+fn metadata_value_contains_projection(actual: &Value, expected: &Value) -> bool {
+    if value_is_string_array(actual) || value_is_string_array(expected) {
+        if let (Some(actual_list), Some(expected_list)) = (
+            normalize_string_list(actual),
+            normalize_string_list(expected),
+        ) {
+            return expected_list
+                .iter()
+                .all(|entry| actual_list.iter().any(|present| present == entry));
+        }
+    }
+    metadata_values_match(actual, expected)
 }
 
 pub(crate) fn merge_metadata_semantically(
@@ -228,10 +242,42 @@ pub(crate) fn merge_metadata_semantically(
             continue;
         }
 
+        if let Some(current_value) = merged.get(key) {
+            if let Some(unioned) = merge_list_values(current_value, update_value) {
+                merged.insert(key.clone(), unioned);
+                continue;
+            }
+        }
+
         merged.insert(key.clone(), update_value.clone());
     }
 
     ItemMetadata::from(merged)
+}
+
+fn merge_list_values(current: &Value, update: &Value) -> Option<Value> {
+    if !value_is_string_array(current) && !value_is_string_array(update) {
+        return None;
+    }
+
+    let current_list = normalize_string_list(current)?;
+    let update_list = normalize_string_list(update)?;
+
+    let mut seen: BTreeSet<String> = current_list.iter().cloned().collect();
+    let mut unioned: Vec<String> = current_list;
+    for entry in update_list {
+        if seen.insert(entry.clone()) {
+            unioned.push(entry);
+        }
+    }
+
+    Some(Value::Array(
+        unioned.into_iter().map(Value::String).collect(),
+    ))
+}
+
+fn value_is_string_array(value: &Value) -> bool {
+    matches!(value, Value::Array(items) if items.iter().all(Value::is_string))
 }
 
 impl From<BTreeMap<String, Value>> for ItemMetadata {
@@ -562,8 +608,80 @@ mod tests {
     use serde_json::{json, Map, Value};
 
     use super::{
-        ItemMetadata, MediaType, MetadataChange, MetadataTarget, MetadataValue, PatchOperation,
+        merge_metadata_semantically, metadata_contains_projection, ItemMetadata, MediaType,
+        MetadataChange, MetadataTarget, MetadataValue, PatchOperation,
     };
+
+    fn metadata_from(value: Value) -> ItemMetadata {
+        serde_json::from_value(value).expect("metadata literal")
+    }
+
+    #[test]
+    fn merge_unions_list_values_preserving_current_order_then_appending() {
+        let current = metadata_from(json!({"collection": ["a", "b"]}));
+        let update = metadata_from(json!({"collection": ["b", "c", "a"]}));
+
+        let merged = merge_metadata_semantically(&current, &update);
+
+        assert_eq!(merged.get("collection"), Some(&json!(["a", "b", "c"])));
+    }
+
+    #[test]
+    fn merge_promotes_scalar_to_list_when_update_is_multi_value() {
+        let current = metadata_from(json!({"collection": "a"}));
+        let update = metadata_from(json!({"collection": ["a", "b"]}));
+
+        let merged = merge_metadata_semantically(&current, &update);
+
+        assert_eq!(merged.get("collection"), Some(&json!(["a", "b"])));
+    }
+
+    #[test]
+    fn merge_keeps_replace_semantics_for_differing_scalars() {
+        let current = metadata_from(json!({"title": "Old"}));
+        let update = metadata_from(json!({"title": "New"}));
+
+        let merged = merge_metadata_semantically(&current, &update);
+
+        assert_eq!(merged.get("title"), Some(&json!("New")));
+    }
+
+    #[test]
+    fn merge_falls_through_to_replace_for_non_string_arrays() {
+        let current = metadata_from(json!({"weights": [1, 2]}));
+        let update = metadata_from(json!({"weights": [3]}));
+
+        let merged = merge_metadata_semantically(&current, &update);
+
+        assert_eq!(merged.get("weights"), Some(&json!([3])));
+    }
+
+    #[test]
+    fn contains_projection_treats_list_as_subset_check() {
+        let superset = metadata_from(json!({"collection": ["a", "b"]}));
+        let expected_subset = metadata_from(json!({"collection": ["a"]}));
+        assert!(metadata_contains_projection(&superset, &expected_subset));
+
+        let scalar_subset = metadata_from(json!({"collection": "a"}));
+        assert!(metadata_contains_projection(&superset, &scalar_subset));
+
+        let unmet = metadata_from(json!({"collection": ["a", "c"]}));
+        assert!(!metadata_contains_projection(&superset, &unmet));
+
+        let single = metadata_from(json!({"collection": ["a"]}));
+        let wider = metadata_from(json!({"collection": ["a", "b"]}));
+        assert!(!metadata_contains_projection(&single, &wider));
+    }
+
+    #[test]
+    fn contains_projection_scalar_exact_match_unchanged() {
+        let actual = metadata_from(json!({"title": "Demo"}));
+        let same = metadata_from(json!({"title": "Demo"}));
+        let different = metadata_from(json!({"title": "Other"}));
+
+        assert!(metadata_contains_projection(&actual, &same));
+        assert!(!metadata_contains_projection(&actual, &different));
+    }
 
     #[test]
     fn builder_handles_common_fields_and_lists() {

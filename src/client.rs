@@ -427,9 +427,11 @@ impl InternetArchiveClient {
     /// Updates the item-level metadata document by overlaying the provided keys
     /// onto the current metadata and diffing the result.
     ///
-    /// Missing keys in `metadata` are left untouched. Use
+    /// Missing keys in `metadata` are left untouched. Existing entries within
+    /// list-valued fields (for example `collection`, `subject`, `language`) are
+    /// also preserved; the update set is unioned into them. Use
     /// [`Self::apply_metadata_patch`] when you want exact JSON Patch behavior,
-    /// including removals.
+    /// including removing individual list entries or whole keys.
     ///
     /// If there are no effective changes, the method returns a synthetic
     /// successful response with no task id and does not require authentication.
