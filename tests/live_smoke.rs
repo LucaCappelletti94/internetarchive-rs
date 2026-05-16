@@ -584,3 +584,117 @@ async fn live_workflow_helpers_round_trip() {
     )
     .await;
 }
+
+#[cfg(feature = "indicatif")]
+#[tokio::test]
+async fn live_progress_round_trip_uses_indicatif_callbacks() {
+    use internetarchive_rs::indicatif::ProgressBar;
+
+    let Some(_) = live_credentials() else {
+        eprintln!(
+            "Skipping live_progress_round_trip_uses_indicatif_callbacks: missing Internet Archive credentials"
+        );
+        return;
+    };
+    let client = InternetArchiveClient::from_env().expect("live credentials");
+    let tempdir = tempdir().expect("tempdir");
+
+    let identifier = unique_identifier("live-progress");
+    let seed_path = tempdir.path().join("seed.txt");
+    let extra_path = tempdir.path().join("extra.txt");
+    let seed_body = b"progress seed artifact";
+    let extra_body = b"progress secondary artifact bytes";
+    tokio::fs::write(&seed_path, seed_body)
+        .await
+        .expect("write seed");
+    tokio::fs::write(&extra_path, extra_body)
+        .await
+        .expect("write extra");
+    let seed_len = seed_body.len() as u64;
+    let extra_len = extra_body.len() as u64;
+
+    let metadata = ItemMetadata::builder()
+        .mediatype(MediaType::Texts)
+        .title(format!(
+            "internetarchive-rs progress {}",
+            identifier.as_str()
+        ))
+        .description_html("<p>internetarchive-rs progress round-trip test</p>")
+        .collection(LIVE_TEST_COLLECTION)
+        .language("eng")
+        .build();
+    let upload_options = UploadOptions {
+        skip_derive: true,
+        ..UploadOptions::default()
+    };
+
+    let create_progress = ProgressBar::hidden();
+    client
+        .create_item_with_progress(
+            &identifier,
+            &metadata,
+            &UploadSpec::from_path(&seed_path).expect("seed upload spec"),
+            &upload_options,
+            &create_progress,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            panic!("create_item_with_progress {}: {error}", identifier.as_str())
+        });
+    assert_eq!(
+        create_progress.position(),
+        seed_len,
+        "create_item progress bar did not reach payload length"
+    );
+    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
+
+    let upload_progress = ProgressBar::hidden();
+    client
+        .upload_file_with_progress(
+            &identifier,
+            &UploadSpec::from_path(&extra_path).expect("extra upload spec"),
+            &upload_options,
+            &upload_progress,
+        )
+        .await
+        .expect("upload_file_with_progress");
+    assert_eq!(
+        upload_progress.position(),
+        extra_len,
+        "upload_file progress bar did not reach payload length"
+    );
+    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(120)).await;
+
+    let bytes_progress = ProgressBar::hidden();
+    let downloaded_seed = client
+        .download_bytes_with_progress(&identifier, "seed.txt", &bytes_progress)
+        .await
+        .expect("download_bytes_with_progress");
+    assert_eq!(downloaded_seed.as_ref(), seed_body);
+    assert_eq!(
+        bytes_progress.position(),
+        seed_len,
+        "download_bytes progress bar did not reach payload length"
+    );
+
+    let to_path_progress = ProgressBar::hidden();
+    let downloaded_path = tempdir.path().join("extra-downloaded.txt");
+    client
+        .download_to_path_with_progress(
+            &identifier,
+            "extra.txt",
+            &downloaded_path,
+            &to_path_progress,
+        )
+        .await
+        .expect("download_to_path_with_progress");
+    let downloaded_extra = tokio::fs::read(&downloaded_path)
+        .await
+        .expect("read downloaded extra");
+    assert_eq!(downloaded_extra.as_slice(), extra_body);
+    assert_eq!(
+        to_path_progress.position(),
+        extra_len,
+        "download_to_path progress bar did not reach payload length"
+    );
+}
