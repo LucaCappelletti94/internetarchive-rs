@@ -40,5 +40,6 @@ url = { version = "2.5", features = ["serde"] }
 
 [dev-dependencies]
 axum = "0.8"
+dotenvy = "0.15"
 http-body-util = "0.1"
 tempfile = "3.27"

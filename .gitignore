@@ -20,6 +20,10 @@ cobertura.xml
 __pycache__/
 *.py[cod]
 
+# Local Internet Archive S3 credentials for live tests
+.env
+.env.local
+
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

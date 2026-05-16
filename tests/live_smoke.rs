@@ -1,6 +1,7 @@
 #![allow(clippy::expect_used, clippy::missing_panics_doc, clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Once;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use internetarchive_rs::{
@@ -70,7 +71,15 @@ fn unique_identifier(label: &str) -> ItemIdentifier {
     live_identifier_from_parts(label, timestamp, counter)
 }
 
+fn load_dotenv_once() {
+    static LOAD: Once = Once::new();
+    LOAD.call_once(|| {
+        let _ = dotenvy::dotenv();
+    });
+}
+
 fn live_credentials() -> Option<Auth> {
+    load_dotenv_once();
     Auth::from_env().ok()
 }
 
