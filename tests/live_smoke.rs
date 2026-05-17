@@ -1,5 +1,7 @@
 #![allow(clippy::expect_used, clippy::missing_panics_doc, clippy::unwrap_used)]
 
+mod cleanup_support;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Once;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -113,23 +115,14 @@ impl Drop for LiveItemGuard {
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(async {
-                    let mut delay = Duration::from_millis(500);
-                    let mut last_error: Option<InternetArchiveError> = None;
-                    for _ in 0..4 {
-                        match client.make_dark(&identifier, "live test cleanup").await {
-                            Ok(submission) => return Ok(submission),
-                            Err(error) => {
-                                last_error = Some(error);
-                                tokio::time::sleep(delay).await;
-                                delay = delay.saturating_mul(2);
-                            }
-                        }
-                    }
-                    Err(last_error.unwrap_or_else(|| {
-                        InternetArchiveError::InvalidState(
-                            "cleanup exited retry loop without an attempt".to_owned(),
-                        )
-                    }))
+                    cleanup_support::dark_with_retries(
+                        &client,
+                        &identifier,
+                        "live test cleanup",
+                        4,
+                        Duration::from_millis(500),
+                    )
+                    .await
                 })
             })
         }));

@@ -1,6 +1,9 @@
 #![allow(clippy::expect_used, clippy::missing_panics_doc, clippy::unwrap_used)]
 
+mod cleanup_support;
 mod mock_support;
+
+use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use internetarchive_rs::{
@@ -505,4 +508,91 @@ async fn make_dark_reports_invalid_state_when_envelope_marks_failure_with_200() 
         }
         other => panic!("unexpected error variant: {other:?}"),
     }
+}
+#[tokio::test]
+async fn dark_with_retries_eventually_succeeds_after_transient_failures() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    for _ in 0..2 {
+        server.enqueue_json(
+            Method::POST,
+            "/services/tasks.php",
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({"success": false, "error": "rate limited"}),
+        );
+    }
+    server.enqueue_json(
+        Method::POST,
+        "/services/tasks.php",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "value": {
+                "task_id": 42_u64,
+                "log": "https://catalogd.archive.org/log/42"
+            }
+        }),
+    );
+
+    let submission = cleanup_support::dark_with_retries(
+        &client,
+        &identifier,
+        "test",
+        4,
+        Duration::from_millis(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(submission.task_id.0, 42);
+
+    let posts = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == Method::POST && request.path == "/services/tasks.php")
+        .count();
+    assert_eq!(posts, 3, "expected 3 POST attempts (2 failures + success)");
+}
+
+#[tokio::test]
+async fn dark_with_retries_returns_last_error_after_exhausting_attempts() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    for _ in 0..4 {
+        server.enqueue_json(
+            Method::POST,
+            "/services/tasks.php",
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({"success": false, "error": "rate limited"}),
+        );
+    }
+
+    let error = cleanup_support::dark_with_retries(
+        &client,
+        &identifier,
+        "test",
+        4,
+        Duration::from_millis(1),
+    )
+    .await
+    .unwrap_err();
+    match error {
+        InternetArchiveError::Http { status, .. } => {
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+
+    let posts = server
+        .requests()
+        .into_iter()
+        .filter(|request| request.method == Method::POST && request.path == "/services/tasks.php")
+        .count();
+    assert_eq!(
+        posts, 4,
+        "expected exactly 4 POST attempts before giving up"
+    );
 }
