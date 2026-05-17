@@ -93,6 +93,7 @@ fn live_credentials() -> Option<Auth> {
 struct LiveItemGuard {
     client: InternetArchiveClient,
     identifier: ItemIdentifier,
+    armed: bool,
 }
 
 impl LiveItemGuard {
@@ -100,16 +101,24 @@ impl LiveItemGuard {
         Self {
             client: client.clone(),
             identifier,
+            armed: true,
         }
     }
 
     fn identifier(&self) -> &ItemIdentifier {
         &self.identifier
     }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 impl Drop for LiveItemGuard {
     fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
         let identifier = self.identifier.clone();
         let client = self.client.clone();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -416,7 +425,7 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .unwrap_or_else(|error| panic!("create item {}: {error}", identifier.as_str()));
-    let _item_guard = LiveItemGuard::new(&client, identifier.clone());
+    let mut item_guard = LiveItemGuard::new(&client, identifier.clone());
 
     wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
     assert!(client
@@ -447,10 +456,19 @@ async fn live_low_level_client_api_round_trip() {
     client
         .apply_metadata_changes(
             &identifier,
-            &[MetadataChange::new(
-                &MetadataTarget::Metadata,
-                vec![PatchOperation::add("/live_api_marker", "enabled")],
-            )],
+            &[
+                MetadataChange::new(
+                    &MetadataTarget::Metadata,
+                    vec![PatchOperation::add("/live_api_marker", "enabled")],
+                ),
+                MetadataChange::new(
+                    &MetadataTarget::File("seed.txt".to_owned()),
+                    vec![PatchOperation::add(
+                        "/description",
+                        "internetarchive-rs live multi-target apply_metadata_changes",
+                    )],
+                ),
+            ],
         )
         .await
         .expect("apply metadata changes");
@@ -539,6 +557,23 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("delete bytes file");
+
+    let submission = client
+        .make_dark(&identifier, "live test direct make_dark assertion")
+        .await
+        .expect("make_dark");
+    assert!(
+        submission.task_id.0 > 0,
+        "task_id should be non-zero, got {}",
+        submission.task_id.0
+    );
+    assert_eq!(
+        submission.log.scheme(),
+        "https",
+        "log url should be https, got {}",
+        submission.log
+    );
+    item_guard.disarm();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

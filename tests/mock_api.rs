@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::http::{Method, StatusCode};
 use internetarchive_rs::{
     FileConflictPolicy, InternetArchiveError, ItemIdentifier, ItemMetadata, MediaType,
-    PublishRequest, UploadSpec,
+    MetadataChange, MetadataTarget, PatchOperation, PublishRequest, UploadSpec,
 };
 use mock_support::{MockInternetArchiveServer, QueuedResponse};
 
@@ -595,4 +595,60 @@ async fn dark_with_retries_returns_last_error_after_exhausting_attempts() {
         posts, 4,
         "expected exactly 4 POST attempts before giving up"
     );
+}
+#[tokio::test]
+async fn apply_metadata_changes_encodes_multi_target_array_in_form_body() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 1234,
+            "log": "https://catalogd.archive.org/log/1234"
+        }),
+    );
+
+    client
+        .apply_metadata_changes(
+            &identifier,
+            &[
+                MetadataChange::new(
+                    &MetadataTarget::Metadata,
+                    vec![PatchOperation::add("/marker", "enabled")],
+                ),
+                MetadataChange::new(
+                    &MetadataTarget::File("seed.txt".to_owned()),
+                    vec![PatchOperation::add("/description", "hello")],
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    let posted = requests
+        .iter()
+        .find(|request| request.method == Method::POST && request.path == "/metadata/demo-item")
+        .expect("captured POST");
+    let body_text = std::str::from_utf8(&posted.body).expect("utf-8 body");
+    let changes_value = body_text
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("-changes="))
+        .expect("-changes field present");
+    let decoded: String = url::form_urlencoded::parse(format!("v={changes_value}").as_bytes())
+        .next()
+        .map(|(_, value)| value.into_owned())
+        .expect("url-decoded value");
+    let parsed: serde_json::Value = serde_json::from_str(&decoded).expect("json array");
+    let entries = parsed.as_array().expect("changes is array");
+    assert_eq!(entries.len(), 2, "expected two MetadataChange entries");
+    assert_eq!(entries[0]["target"], "metadata");
+    assert_eq!(entries[1]["target"], "files/seed.txt");
+    assert_eq!(entries[0]["patch"][0]["path"], "/marker");
+    assert_eq!(entries[1]["patch"][0]["path"], "/description");
 }
