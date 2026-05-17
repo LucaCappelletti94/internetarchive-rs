@@ -197,6 +197,15 @@ impl SearchDocument {
     }
 }
 
+/// Result of submitting a task to the Internet Archive tasks API.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TaskSubmission {
+    /// Queued task identifier returned by the tasks API.
+    pub task_id: TaskId,
+    /// URL of the task log file.
+    pub log: Url,
+}
+
 /// Response returned by the S3 limit-check endpoint.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct S3LimitCheck {

@@ -4,7 +4,8 @@ mod mock_support;
 
 use axum::http::{Method, StatusCode};
 use internetarchive_rs::{
-    FileConflictPolicy, ItemIdentifier, ItemMetadata, MediaType, PublishRequest, UploadSpec,
+    FileConflictPolicy, InternetArchiveError, ItemIdentifier, ItemMetadata, MediaType,
+    PublishRequest, UploadSpec,
 };
 use mock_support::{MockInternetArchiveServer, QueuedResponse};
 
@@ -394,4 +395,114 @@ async fn upsert_item_does_not_emit_collection_removal_when_archive_returns_super
         !requests.iter().any(|request| request.method == Method::PUT),
         "no upload should be attempted under Skip policy"
     );
+}
+#[tokio::test]
+async fn make_dark_submits_make_dark_task_with_comment_and_decodes_envelope() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::POST,
+        "/services/tasks.php",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "value": {
+                "task_id": 5_374_921_600u64,
+                "log": "https://catalogd.archive.org/log/5374921600"
+            }
+        }),
+    );
+
+    let submission = client
+        .make_dark(&identifier, "live test cleanup")
+        .await
+        .unwrap();
+
+    assert_eq!(submission.task_id.0, 5_374_921_600);
+    assert_eq!(
+        submission.log.as_str(),
+        "https://catalogd.archive.org/log/5374921600"
+    );
+
+    let requests = server.requests();
+    assert_eq!(requests.len(), 1);
+    let posted = &requests[0];
+    assert_eq!(posted.method, Method::POST);
+    assert_eq!(posted.path, "/services/tasks.php");
+    assert_eq!(
+        posted.headers.get("authorization").unwrap(),
+        "LOW access:secret"
+    );
+    assert_eq!(
+        posted.headers.get("content-type").unwrap(),
+        "application/json"
+    );
+    let body: serde_json::Value = serde_json::from_slice(&posted.body).unwrap();
+    assert_eq!(body["identifier"], "demo-item");
+    assert_eq!(body["cmd"], "make_dark.php");
+    assert_eq!(body["args"]["comment"], "live test cleanup");
+}
+
+#[tokio::test]
+async fn make_dark_reports_http_failure_when_caller_lacks_permission() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("not-mine").unwrap();
+
+    server.enqueue_json(
+        Method::POST,
+        "/services/tasks.php",
+        StatusCode::UNAUTHORIZED,
+        serde_json::json!({
+            "success": false,
+            "error": "Unauthorized to edit item"
+        }),
+    );
+
+    let error = client
+        .make_dark(&identifier, "live test cleanup")
+        .await
+        .unwrap_err();
+    match error {
+        InternetArchiveError::Http {
+            status, message, ..
+        } => {
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(message.as_deref(), Some("Unauthorized to edit item"));
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn make_dark_reports_invalid_state_when_envelope_marks_failure_with_200() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::POST,
+        "/services/tasks.php",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": false,
+            "error": "rate limit exceeded"
+        }),
+    );
+
+    let error = client
+        .make_dark(&identifier, "live test cleanup")
+        .await
+        .unwrap_err();
+    match error {
+        InternetArchiveError::InvalidState(message) => {
+            assert!(
+                message.contains("rate limit exceeded"),
+                "expected rate-limit message, got: {message}"
+            );
+        }
+        other => panic!("unexpected error variant: {other:?}"),
+    }
 }

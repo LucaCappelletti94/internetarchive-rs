@@ -30,7 +30,7 @@ use crate::metadata::{
     merge_metadata_semantically, metadata_contains_projection, HeaderEncoding, ItemMetadata,
     MetadataChange, MetadataTarget, PatchOperation,
 };
-use crate::model::{Item, MetadataWriteResponse, S3LimitCheck, SearchResponse};
+use crate::model::{Item, MetadataWriteResponse, S3LimitCheck, SearchResponse, TaskSubmission};
 use crate::poll::PollOptions;
 use crate::search::SearchQuery;
 use crate::upload::{DeleteOptions, UploadOptions, UploadSource, UploadSpec};
@@ -601,6 +601,50 @@ impl InternetArchiveClient {
         let url = self.endpoint.s3_object_url(identifier.as_str(), filename)?;
         self.execute_s3(Method::DELETE, url, headers, None).await?;
         Ok(())
+    }
+
+    /// Submits a `make_dark.php` task to the Internet Archive catalog tasks
+    /// API, hiding the item from public view.
+    ///
+    /// Darkening makes the item unavailable to all users, including the
+    /// uploader and IA's metadata and search subsystems; the item's metadata
+    /// stub remains with `is_dark: true`, but `/details/{id}` returns 404 and
+    /// search no longer indexes it. The caller must have uploaded the item or
+    /// otherwise have edit permission. The `comment` argument is recorded in
+    /// the task log; supply a short rationale (for example `"live test
+    /// cleanup"`).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the client has no credentials, the request fails,
+    /// or IA rejects the task submission (for example with `401` when the
+    /// caller does not own the item).
+    pub async fn make_dark(
+        &self,
+        identifier: &ItemIdentifier,
+        comment: &str,
+    ) -> Result<TaskSubmission, InternetArchiveError> {
+        if self.auth.is_none() {
+            return Err(InternetArchiveError::MissingAuth);
+        }
+        let url = self.endpoint.tasks_url()?;
+        let payload = serde_json::json!({
+            "identifier": identifier.as_str(),
+            "cmd": "make_dark.php",
+            "args": { "comment": comment },
+        });
+        let response = self
+            .archive_request(Method::POST, url)
+            .header(CONTENT_TYPE, "application/json")
+            .header(ACCEPT, "application/json")
+            .body(serde_json::to_vec(&payload)?)
+            .send()
+            .await?;
+        if !response.status().is_success() {
+            return Err(InternetArchiveError::from_response(response).await);
+        }
+        let bytes = response.bytes().await?;
+        decode_task_submission(&bytes)
     }
 
     /// Resolves the public download URL for a file.
@@ -1251,6 +1295,40 @@ fn decode_search_response(bytes: &[u8]) -> Result<SearchResponse, InternetArchiv
     )))
 }
 
+fn decode_task_submission(bytes: &[u8]) -> Result<TaskSubmission, InternetArchiveError> {
+    let value: Value = serde_json::from_slice(bytes)?;
+
+    let success = value
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+
+    if success {
+        if let Some(inner) = value.get("value").cloned() {
+            return Ok(serde_json::from_value(inner)?);
+        }
+    }
+
+    let message = value
+        .get("error")
+        .and_then(Value::as_str)
+        .or_else(|| value.get("message").and_then(Value::as_str))
+        .map_or_else(
+            || {
+                String::from_utf8_lossy(bytes)
+                    .trim()
+                    .chars()
+                    .take(512)
+                    .collect()
+            },
+            str::to_owned,
+        );
+
+    Err(InternetArchiveError::InvalidState(format!(
+        "unexpected task submission response: {message}"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(feature = "indicatif")]
@@ -1626,6 +1704,20 @@ mod tests {
         assert!(format!("{auth:?}").contains("<redacted>"));
     }
 
+    #[test]
+    fn decode_task_submission_falls_back_to_body_excerpt_when_envelope_has_no_error_message() {
+        let error = super::decode_task_submission(b"{\"success\":false}").unwrap_err();
+        match error {
+            InternetArchiveError::InvalidState(message) => {
+                assert!(
+                    message.contains("{\"success\":false}"),
+                    "expected body excerpt in fallback message, got: {message}"
+                );
+            }
+            other => panic!("unexpected error variant: {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn update_item_metadata_returns_synthetic_success_for_noop_diff() {
         async fn metadata() -> Json<Value> {
@@ -1943,6 +2035,10 @@ mod tests {
                 )
                 .await
                 .unwrap_err(),
+            InternetArchiveError::MissingAuth
+        ));
+        assert!(matches!(
+            unauth.make_dark(&identifier, "cleanup").await.unwrap_err(),
             InternetArchiveError::MissingAuth
         ));
 

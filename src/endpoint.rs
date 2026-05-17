@@ -56,6 +56,15 @@ impl Endpoint {
         self.archive_base.join("advancedsearch.php")
     }
 
+    /// Returns the catalog tasks endpoint URL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the configured base URL cannot accept the path.
+    pub fn tasks_url(&self) -> Result<Url, url::ParseError> {
+        self.archive_base.join("services/tasks.php")
+    }
+
     /// Returns the details page URL for an item.
     ///
     /// # Errors
@@ -185,6 +194,10 @@ mod tests {
             endpoint.s3_item_url("xfetch").unwrap().as_str(),
             "https://s3.us.archive.org/xfetch"
         );
+        assert_eq!(
+            endpoint.tasks_url().unwrap().as_str(),
+            "https://archive.org/services/tasks.php"
+        );
     }
 
     #[test]
@@ -206,6 +219,10 @@ mod tests {
         assert_eq!(
             endpoint.s3_object_url("demo", "file.txt").unwrap().as_str(),
             "http://localhost:3000/s3/demo/file.txt"
+        );
+        assert_eq!(
+            endpoint.tasks_url().unwrap().as_str(),
+            "http://localhost:3000/root/services/tasks.php"
         );
     }
 

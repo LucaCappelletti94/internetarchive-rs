@@ -52,7 +52,7 @@ pub use metadata::{
 };
 pub use model::{
     Item, ItemFile, MetadataWriteResponse, S3LimitCheck, SearchDocument, SearchResponse,
-    SearchResponseHeader, SearchResultPage,
+    SearchResponseHeader, SearchResultPage, TaskSubmission,
 };
 pub use poll::PollOptions;
 pub use search::{SearchQuery, SearchQueryBuilder, SearchSort, SortDirection};
