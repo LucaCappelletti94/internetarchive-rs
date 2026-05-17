@@ -83,6 +83,64 @@ fn live_credentials() -> Option<Auth> {
     Auth::from_env().ok()
 }
 
+/// RAII guard that submits a `make_dark.php` task for the wrapped item when
+/// dropped, so a live test that panics or returns early does not leave a
+/// public Archive item behind. Cleanup runs synchronously via
+/// `tokio::task::block_in_place` + `Handle::current().block_on`, which
+/// requires the test to use the `multi_thread` runtime flavor.
+struct LiveItemGuard {
+    client: InternetArchiveClient,
+    identifier: ItemIdentifier,
+}
+
+impl LiveItemGuard {
+    fn new(client: &InternetArchiveClient, identifier: ItemIdentifier) -> Self {
+        Self {
+            client: client.clone(),
+            identifier,
+        }
+    }
+
+    fn identifier(&self) -> &ItemIdentifier {
+        &self.identifier
+    }
+}
+
+impl Drop for LiveItemGuard {
+    fn drop(&mut self) {
+        let identifier = self.identifier.clone();
+        let client = self.client.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    let mut delay = Duration::from_millis(500);
+                    let mut last_error: Option<InternetArchiveError> = None;
+                    for _ in 0..4 {
+                        match client.make_dark(&identifier, "live test cleanup").await {
+                            Ok(submission) => return Ok(submission),
+                            Err(error) => {
+                                last_error = Some(error);
+                                tokio::time::sleep(delay).await;
+                                delay = delay.saturating_mul(2);
+                            }
+                        }
+                    }
+                    Err(last_error.unwrap_or_else(|| {
+                        InternetArchiveError::InvalidState(
+                            "cleanup exited retry loop without an attempt".to_owned(),
+                        )
+                    }))
+                })
+            })
+        }));
+        match outcome {
+            Ok(Ok(_)) => eprintln!("[cleanup] darkened {identifier}"),
+            Ok(Err(error)) => eprintln!("[cleanup] failed to dark {identifier}: {error}"),
+            Err(_) => eprintln!("[cleanup] panic while darkening {identifier}"),
+        }
+    }
+}
+
 #[test]
 fn generated_live_identifiers_are_bucket_safe() {
     let identifier =
@@ -172,7 +230,7 @@ async fn wait_for_search_hit(
 async fn publish_with_fresh_identifier(
     client: &InternetArchiveClient,
     artifact_path: &std::path::Path,
-) -> (ItemIdentifier, internetarchive_rs::PublishOutcome) {
+) -> (LiveItemGuard, internetarchive_rs::PublishOutcome) {
     let max_attempts = 3;
 
     for attempt in 0..max_attempts {
@@ -195,7 +253,7 @@ async fn publish_with_fresh_identifier(
         match client.publish_item(request).await {
             Ok(outcome) => {
                 assert!(outcome.created);
-                return (identifier, outcome);
+                return (LiveItemGuard::new(client, identifier), outcome);
             }
             Err(InternetArchiveError::InvalidState(message))
                 if message.contains("already exists") && attempt + 1 < max_attempts => {}
@@ -206,7 +264,7 @@ async fn publish_with_fresh_identifier(
     panic!("publish item: exhausted identifier retries");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn live_low_level_client_api_round_trip() {
     let Some(auth) = live_credentials() else {
         eprintln!(
@@ -365,6 +423,7 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .unwrap_or_else(|error| panic!("create item {}: {error}", identifier.as_str()));
+    let _item_guard = LiveItemGuard::new(&client, identifier.clone());
 
     wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
     assert!(client
@@ -489,7 +548,7 @@ async fn live_low_level_client_api_round_trip() {
         .expect("delete bytes file");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn live_workflow_helpers_round_trip() {
     let Some(_) = live_credentials() else {
         eprintln!(
@@ -504,7 +563,8 @@ async fn live_workflow_helpers_round_trip() {
         .await
         .expect("write artifact");
 
-    let (identifier, _) = publish_with_fresh_identifier(&client, &artifact).await;
+    let (item_guard, _) = publish_with_fresh_identifier(&client, &artifact).await;
+    let identifier = item_guard.identifier().clone();
     wait_for_item_file(
         &client,
         &identifier,
@@ -586,7 +646,7 @@ async fn live_workflow_helpers_round_trip() {
 }
 
 #[cfg(feature = "indicatif")]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn live_progress_round_trip_uses_indicatif_callbacks() {
     use internetarchive_rs::indicatif::ProgressBar;
 
@@ -641,6 +701,7 @@ async fn live_progress_round_trip_uses_indicatif_callbacks() {
         .unwrap_or_else(|error| {
             panic!("create_item_with_progress {}: {error}", identifier.as_str())
         });
+    let _item_guard = LiveItemGuard::new(&client, identifier.clone());
     assert_eq!(
         create_progress.position(),
         seed_len,

@@ -14,6 +14,8 @@ import os
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import internetarchive
@@ -120,7 +122,43 @@ def main() -> int:
     statuses = [getattr(response, "status_code", None) for response in responses]
     print(f"official_client_probe_statuses={statuses}")
     print(f"official_client_probe_created={identifier}")
+
+    cleanup_status = make_dark(identifier, access_key, secret_key)
+    print(f"official_client_probe_cleanup={cleanup_status}")
     return 0
+
+
+def make_dark(identifier: str, access_key: str, secret_key: str) -> str:
+    """Submit a make_dark.php task so the probe item does not leak publicly."""
+    payload = json.dumps(
+        {
+            "identifier": identifier,
+            "cmd": "make_dark.php",
+            "args": {"comment": "live CI probe cleanup"},
+        }
+    ).encode()
+    request = urllib.request.Request(
+        "https://archive.org/services/tasks.php",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"LOW {access_key}:{secret_key}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            body = json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        return f"http_error_{error.code}"
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        return f"transport_error_{type(error).__name__}"
+
+    if body.get("success"):
+        task_id = body.get("value", {}).get("task_id")
+        return f"queued_task_id={task_id}"
+    return f"task_rejected={body.get('error', 'unknown')}"
 
 
 def is_account_identifier_permission_failure(error: Exception, response_text: str) -> bool:
