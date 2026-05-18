@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use internetarchive_rs::{
-    FileConflictPolicy, InternetArchiveError, ItemIdentifier, ItemMetadata, MediaType,
-    MetadataChange, MetadataTarget, PatchOperation, PublishRequest, UploadSpec,
+    Auth, Endpoint, FileConflictPolicy, InternetArchiveClient, InternetArchiveError,
+    ItemIdentifier, ItemMetadata, MediaType, MetadataChange, MetadataTarget, PatchOperation,
+    PublishRequest, UploadSpec,
 };
 use mock_support::{MockInternetArchiveServer, QueuedResponse};
 
@@ -651,4 +652,156 @@ async fn apply_metadata_changes_encodes_multi_target_array_in_form_body() {
     assert_eq!(entries[1]["target"], "files/seed.txt");
     assert_eq!(entries[0]["patch"][0]["path"], "/marker");
     assert_eq!(entries[1]["patch"][0]["path"], "/description");
+}
+
+#[tokio::test]
+async fn apply_metadata_changes_encodes_user_json_and_root_targets_in_form_body() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 7777,
+            "log": "https://catalogd.archive.org/log/7777"
+        }),
+    );
+
+    client
+        .apply_metadata_changes(
+            &identifier,
+            &[
+                MetadataChange::new(
+                    &MetadataTarget::UserJson("workflow".to_owned()),
+                    vec![PatchOperation::add("/state", "running")],
+                ),
+                MetadataChange::new(
+                    &MetadataTarget::RootUserJson,
+                    vec![PatchOperation::add("/alive", true)],
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    let posted = requests
+        .iter()
+        .find(|request| request.method == Method::POST && request.path == "/metadata/demo-item")
+        .expect("captured POST");
+    let body_text = std::str::from_utf8(&posted.body).expect("utf-8 body");
+    let changes_value = body_text
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("-changes="))
+        .expect("-changes field present");
+    let decoded: String = url::form_urlencoded::parse(format!("v={changes_value}").as_bytes())
+        .next()
+        .map(|(_, value)| value.into_owned())
+        .expect("url-decoded value");
+    let parsed: serde_json::Value = serde_json::from_str(&decoded).expect("json array");
+    let entries = parsed.as_array().expect("changes is array");
+    assert_eq!(entries.len(), 2, "expected two MetadataChange entries");
+    assert_eq!(entries[0]["target"], "workflow");
+    assert_eq!(entries[1]["target"], "");
+    assert_eq!(entries[0]["patch"][0]["path"], "/state");
+    assert_eq!(entries[1]["patch"][0]["path"], "/alive");
+}
+#[tokio::test]
+async fn apply_metadata_patch_encodes_test_remove_and_ia_extension_ops_in_form_body() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue_json(
+        Method::POST,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "success": true,
+            "task_id": 2024,
+            "log": "https://catalogd.archive.org/log/2024"
+        }),
+    );
+
+    client
+        .apply_metadata_patch(
+            &identifier,
+            MetadataTarget::Metadata,
+            &[
+                PatchOperation::test("/title", "expected"),
+                PatchOperation::Remove {
+                    path: "/obsolete".to_owned(),
+                },
+                PatchOperation::RemoveFirst {
+                    path: "/tags".to_owned(),
+                    value: serde_json::json!("legacy"),
+                },
+                PatchOperation::RemoveAll {
+                    path: "/tags".to_owned(),
+                    value: serde_json::json!("dup"),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+
+    let requests = server.requests();
+    let posted = requests
+        .iter()
+        .find(|request| request.method == Method::POST && request.path == "/metadata/demo-item")
+        .expect("captured POST");
+    let body_text = std::str::from_utf8(&posted.body).expect("utf-8 body");
+    let patch_value = body_text
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("-patch="))
+        .expect("-patch field present");
+    let decoded: String = url::form_urlencoded::parse(format!("v={patch_value}").as_bytes())
+        .next()
+        .map(|(_, value)| value.into_owned())
+        .expect("url-decoded value");
+    let parsed: serde_json::Value = serde_json::from_str(&decoded).expect("json array");
+    let entries = parsed.as_array().expect("patch is array");
+    assert_eq!(entries.len(), 4);
+    assert_eq!(entries[0]["op"], "test");
+    assert_eq!(entries[1]["op"], "remove");
+    assert_eq!(entries[2]["op"], "remove-first");
+    assert_eq!(entries[2]["value"], "legacy");
+    assert_eq!(entries[3]["op"], "remove-all");
+    assert_eq!(entries[3]["value"], "dup");
+}
+
+#[tokio::test]
+async fn client_builder_user_agent_override_reaches_wire() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = InternetArchiveClient::builder()
+        .auth(Auth::new("access", "secret"))
+        .endpoint(Endpoint::custom(
+            server.archive_base.clone(),
+            server.s3_base.clone(),
+        ))
+        .user_agent("internetarchive-rs-test/9.9.9")
+        .build()
+        .unwrap();
+
+    server.enqueue_json(
+        Method::GET,
+        "/metadata/demo-item",
+        StatusCode::OK,
+        serde_json::json!({
+            "metadata": {"identifier": "demo-item"},
+            "files": []
+        }),
+    );
+
+    let _item = client.get_item_by_str("demo-item").await.unwrap();
+
+    let captured = server.requests().into_iter().next().expect("one request");
+    assert_eq!(
+        captured.headers.get("user-agent").map(String::as_str),
+        Some("internetarchive-rs-test/9.9.9"),
+    );
 }

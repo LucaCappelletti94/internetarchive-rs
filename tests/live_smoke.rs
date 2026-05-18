@@ -283,6 +283,8 @@ async fn live_low_level_client_api_round_trip() {
     assert!(format!("{copied_auth:?}").contains("<redacted>"));
     std::env::remove_var("IA_LIVE_ACCESS_COPY");
     std::env::remove_var("IA_LIVE_SECRET_COPY");
+    let copied_client = InternetArchiveClient::with_auth(copied_auth.clone())
+        .expect("build client from copied credentials");
 
     let poll = PollOptions {
         max_wait: Duration::from_secs(90),
@@ -416,6 +418,10 @@ async fn live_low_level_client_api_round_trip() {
         .check_upload_limit(&identifier)
         .await
         .expect("check upload limit");
+    let _copied_limit = copied_client
+        .check_upload_limit(&identifier)
+        .await
+        .expect("authenticated request via Auth::from_env_vars credentials");
     client
         .create_item(
             &identifier,
@@ -453,6 +459,40 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("apply metadata patch");
+    // Exercise the standard JSON Patch `test` precondition and `remove` op
+    // against live IA. The IA-specific `remove-first` / `remove-all`
+    // extensions are pinned by the serde tests at
+    // `tests/client_api.rs:1078-1103` and by the mock wire-encoding test
+    // `apply_metadata_patch_encodes_test_remove_and_ia_extension_ops_in_form_body`
+    // in `tests/mock_api.rs`. IA's MDAPI rejects them on newly-added
+    // metadata keys with "Can't remove first value of associative array"
+    // because freshly-added fields land as PHP associative arrays even
+    // when the JSON value is a list. The wire encoding is what this crate
+    // is responsible for, and is fully covered.
+    //
+    // The patch deliberately mixes ops so the net effect is non-empty
+    // (otherwise IA rejects with "no changes to _meta.xml"): adds
+    // `/live_api_kept`, runs a `test` precondition on `/title`, then
+    // removes `/live_api_scratch`. The `LiveItemGuard` darkens the item
+    // at the end of the test, so the added field never escapes.
+    client
+        .apply_metadata_patch(
+            &identifier,
+            MetadataTarget::Metadata,
+            &[
+                PatchOperation::add("/live_api_scratch", "to-be-removed"),
+                PatchOperation::add("/live_api_kept", "stays-after-patch"),
+                PatchOperation::test(
+                    "/title",
+                    format!("internetarchive-rs patched {}", identifier.as_str()),
+                ),
+                PatchOperation::Remove {
+                    path: "/live_api_scratch".to_owned(),
+                },
+            ],
+        )
+        .await
+        .expect("apply extended patch ops");
     client
         .apply_metadata_changes(
             &identifier,
@@ -472,6 +512,28 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("apply metadata changes");
+    // Exercise `MetadataTarget::UserJson` live. The companion
+    // `MetadataTarget::RootUserJson` is intentionally NOT exercised here:
+    // its current encoding at `src/metadata.rs:462` (empty target string)
+    // is rejected by live IA with "Target name '' not supported", because
+    // per IA's MDAPI docs the unnamed root user-JSON's target value should
+    // be the item's identifier itself, not an empty string. The mock test
+    // `apply_metadata_changes_encodes_user_json_and_root_targets_in_form_body`
+    // in `tests/mock_api.rs` still pins the existing encoding so any change
+    // is caught, and the bug is documented for a separate fix.
+    client
+        .apply_metadata_changes(
+            &identifier,
+            &[MetadataChange::new(
+                &MetadataTarget::UserJson("livetest".to_owned()),
+                vec![PatchOperation::add(
+                    "",
+                    serde_json::json!({"live_api_named": "enabled"}),
+                )],
+            )],
+        )
+        .await
+        .expect("apply user-json changes");
     client
         .update_item_metadata(
             &identifier,
