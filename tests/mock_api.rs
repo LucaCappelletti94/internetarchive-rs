@@ -680,7 +680,7 @@ async fn apply_metadata_changes_encodes_user_json_and_root_targets_in_form_body(
                     vec![PatchOperation::add("/state", "running")],
                 ),
                 MetadataChange::new(
-                    &MetadataTarget::RootUserJson,
+                    &MetadataTarget::RootUserJson(identifier.clone()),
                     vec![PatchOperation::add("/alive", true)],
                 ),
             ],
@@ -706,7 +706,10 @@ async fn apply_metadata_changes_encodes_user_json_and_root_targets_in_form_body(
     let entries = parsed.as_array().expect("changes is array");
     assert_eq!(entries.len(), 2, "expected two MetadataChange entries");
     assert_eq!(entries[0]["target"], "workflow");
-    assert_eq!(entries[1]["target"], "");
+    assert_eq!(
+        entries[1]["target"], "demo-item",
+        "RootUserJson must encode as the item identifier (IA rejects empty target)"
+    );
     assert_eq!(entries[0]["patch"][0]["path"], "/state");
     assert_eq!(entries[1]["patch"][0]["path"], "/alive");
 }

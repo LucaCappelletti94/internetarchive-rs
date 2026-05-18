@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::serde_util::normalize_string_list;
+use crate::ItemIdentifier;
 
 /// Common Internet Archive media types.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -446,10 +447,14 @@ pub enum MetadataTarget {
     Metadata,
     /// Update metadata for a specific file entry.
     File(String),
-    /// Update a named user JSON document.
+    /// Update a named user JSON document; persisted by IA as
+    /// `{identifier}_{name}.json`.
     UserJson(String),
-    /// Update the unnamed root user JSON document.
-    RootUserJson,
+    /// Update the unnamed root user JSON document; persisted by IA as
+    /// `{identifier}.json`. The wire-level target value sent to MDAPI is the
+    /// item identifier itself (an empty string would be rejected with
+    /// `Target name '' not supported`).
+    RootUserJson(ItemIdentifier),
 }
 
 impl MetadataTarget {
@@ -459,7 +464,7 @@ impl MetadataTarget {
             Self::Metadata => "metadata".to_owned(),
             Self::File(name) => format!("files/{name}"),
             Self::UserJson(name) => name.clone(),
-            Self::RootUserJson => String::new(),
+            Self::RootUserJson(identifier) => identifier.as_str().to_owned(),
         }
     }
 }
@@ -608,8 +613,8 @@ mod tests {
     use serde_json::{json, Map, Value};
 
     use super::{
-        merge_metadata_semantically, metadata_contains_projection, ItemMetadata, MediaType,
-        MetadataChange, MetadataTarget, MetadataValue, PatchOperation,
+        merge_metadata_semantically, metadata_contains_projection, ItemIdentifier, ItemMetadata,
+        MediaType, MetadataChange, MetadataTarget, MetadataValue, PatchOperation,
     };
 
     fn metadata_from(value: Value) -> ItemMetadata {
@@ -878,6 +883,9 @@ mod tests {
             MetadataTarget::UserJson("extra.json".into()).as_str(),
             "extra.json"
         );
-        assert_eq!(MetadataTarget::RootUserJson.as_str(), "");
+        assert_eq!(
+            MetadataTarget::RootUserJson(ItemIdentifier::new("demo-item").unwrap()).as_str(),
+            "demo-item"
+        );
     }
 }

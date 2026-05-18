@@ -1093,10 +1093,10 @@ fn public_helper_apis_cover_remaining_daily_surface() {
         ],
     );
     let root_change = MetadataChange::new(
-        &MetadataTarget::RootUserJson,
+        &MetadataTarget::RootUserJson(ItemIdentifier::new("demo-item").unwrap()),
         vec![PatchOperation::add("/alive", true)],
     );
-    assert_eq!(root_change.target, "");
+    assert_eq!(root_change.target, "demo-item");
     let serialized_change = serde_json::to_string(&user_json_change).unwrap();
     assert!(serialized_change.contains("extra.json"));
     assert!(serialized_change.contains("\"remove-first\""));

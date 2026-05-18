@@ -512,25 +512,31 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("apply metadata changes");
-    // Exercise `MetadataTarget::UserJson` live. The companion
-    // `MetadataTarget::RootUserJson` is intentionally NOT exercised here:
-    // its current encoding at `src/metadata.rs:462` (empty target string)
-    // is rejected by live IA with "Target name '' not supported", because
-    // per IA's MDAPI docs the unnamed root user-JSON's target value should
-    // be the item's identifier itself, not an empty string. The mock test
-    // `apply_metadata_changes_encodes_user_json_and_root_targets_in_form_body`
-    // in `tests/mock_api.rs` still pins the existing encoding so any change
-    // is caught, and the bug is documented for a separate fix.
+    // Exercise both user-JSON targets live: a named one (creates
+    // `{identifier}_livetest.json`) and the unnamed root one (creates
+    // `{identifier}.json`). The latter requires the wire-level target value
+    // to be the item identifier itself, as IA rejects an empty target with
+    // "Target name '' not supported"; that's encoded by
+    // `MetadataTarget::RootUserJson(identifier)` in `src/metadata.rs`.
     client
         .apply_metadata_changes(
             &identifier,
-            &[MetadataChange::new(
-                &MetadataTarget::UserJson("livetest".to_owned()),
-                vec![PatchOperation::add(
-                    "",
-                    serde_json::json!({"live_api_named": "enabled"}),
-                )],
-            )],
+            &[
+                MetadataChange::new(
+                    &MetadataTarget::UserJson("livetest".to_owned()),
+                    vec![PatchOperation::add(
+                        "",
+                        serde_json::json!({"live_api_named": "enabled"}),
+                    )],
+                ),
+                MetadataChange::new(
+                    &MetadataTarget::RootUserJson(identifier.clone()),
+                    vec![PatchOperation::add(
+                        "",
+                        serde_json::json!({"live_api_root": "enabled"}),
+                    )],
+                ),
+            ],
         )
         .await
         .expect("apply user-json changes");
