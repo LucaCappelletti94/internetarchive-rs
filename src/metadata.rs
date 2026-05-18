@@ -499,7 +499,17 @@ pub enum PatchOperation {
         /// Expected JSON value.
         value: Value,
     },
-    /// Internet Archive extension: removes the first matching value.
+    /// Internet Archive extension: removes the first matching value from the
+    /// indexed array at `path`.
+    ///
+    /// IA's MDAPI requires the target value to be an indexed (list-shaped)
+    /// array. If `path` points at an associative array (PHP map / JSON
+    /// object), or at a field that was created earlier in the same patch
+    /// (newly-added fields land as associative arrays inside MDAPI's
+    /// processor), IA rejects the request with
+    /// `Can't remove first value of associative array`. Apply the `add` that
+    /// creates the list in a prior patch submission, then run `RemoveFirst`
+    /// in a follow-up patch so MDAPI sees a settled indexed array.
     #[serde(rename = "remove-first")]
     RemoveFirst {
         /// JSON Pointer path to the target array, ending in `/-`.
@@ -507,7 +517,14 @@ pub enum PatchOperation {
         /// JSON value to match and remove.
         value: Value,
     },
-    /// Internet Archive extension: removes all matching values.
+    /// Internet Archive extension: removes all matching values from the
+    /// indexed array at `path`.
+    ///
+    /// Same constraint as [`Self::RemoveFirst`]: IA's MDAPI requires the
+    /// target to be an indexed array, not an associative one. Fields created
+    /// in the same patch are treated as associative and rejected with
+    /// `Can't remove first value of associative array`. Split into two
+    /// patches if you need to create-then-remove.
     #[serde(rename = "remove-all")]
     RemoveAll {
         /// JSON Pointer path to the target array or object, ending in `/-`.
