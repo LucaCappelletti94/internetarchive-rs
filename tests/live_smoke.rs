@@ -433,7 +433,7 @@ async fn live_low_level_client_api_round_trip() {
         .unwrap_or_else(|error| panic!("create item {}: {error}", identifier.as_str()));
     let mut item_guard = LiveItemGuard::new(&client, identifier.clone());
 
-    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
+    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(600)).await;
     assert!(client
         .get_item_by_str(identifier.as_str())
         .await
@@ -447,6 +447,46 @@ async fn live_low_level_client_api_round_trip() {
         .docs
         .iter()
         .any(|document| document.identifier().as_ref() == Some(&identifier)));
+
+    // Upload all additional files BEFORE the metadata-mutating operations
+    // below, so the `wait_for_item_file` polls do not race the catalog
+    // tasks those operations queue.
+    //
+    // The wire-level options `keep_old_version`, `interactive_priority`,
+    // and `size_hint` are intentionally NOT set here. Their header
+    // serialization is already pinned by the mock test at
+    // `tests/client_api.rs:293-322`; setting `size_hint` to a value larger
+    // than the actual payload (or enabling `interactive_priority`) makes
+    // IA delay surfacing the new file in the metadata API by many
+    // minutes, which used to flake this test under live load.
+    let upload_options = UploadOptions {
+        skip_derive: true,
+        ..UploadOptions::default()
+    };
+    client
+        .upload_file(
+            &identifier,
+            &UploadSpec::from_path(&extra_path)
+                .expect("extra upload spec")
+                .with_content_type(mime::TEXT_PLAIN),
+            &upload_options,
+        )
+        .await
+        .expect("upload extra file");
+    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(600)).await;
+    client
+        .upload_file(
+            &identifier,
+            &UploadSpec::from_bytes("bytes.txt", b"bytes artifact".to_vec())
+                .with_content_type(mime::TEXT_PLAIN),
+            &UploadOptions {
+                skip_derive: true,
+                ..UploadOptions::default()
+            },
+        )
+        .await
+        .expect("upload bytes file");
+    wait_for_item_file(&client, &identifier, "bytes.txt", Duration::from_secs(600)).await;
 
     client
         .apply_metadata_patch(
@@ -550,24 +590,6 @@ async fn live_low_level_client_api_round_trip() {
         .await
         .expect("update item metadata");
 
-    let upload_options = UploadOptions {
-        skip_derive: true,
-        keep_old_version: true,
-        interactive_priority: true,
-        size_hint: Some(12_345),
-    };
-    client
-        .upload_file(
-            &identifier,
-            &UploadSpec::from_path(&extra_path)
-                .expect("extra upload spec")
-                .with_content_type(mime::TEXT_PLAIN),
-            &upload_options,
-        )
-        .await
-        .expect("upload extra file");
-    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(120)).await;
-
     let resolved = client
         .resolve_download(&identifier, "seed.txt")
         .expect("resolved download");
@@ -592,20 +614,6 @@ async fn live_low_level_client_api_round_trip() {
             .expect("read downloaded extra"),
         "secondary artifact"
     );
-
-    client
-        .upload_file(
-            &identifier,
-            &UploadSpec::from_bytes("bytes.txt", b"bytes artifact".to_vec())
-                .with_content_type(mime::TEXT_PLAIN),
-            &UploadOptions {
-                skip_derive: true,
-                ..UploadOptions::default()
-            },
-        )
-        .await
-        .expect("upload bytes file");
-    wait_for_item_file(&client, &identifier, "bytes.txt", Duration::from_secs(120)).await;
     assert_eq!(
         client
             .download_bytes(&identifier, "bytes.txt")
@@ -665,7 +673,7 @@ async fn live_workflow_helpers_round_trip() {
         &client,
         &identifier,
         "artifact.txt",
-        Duration::from_secs(120),
+        Duration::from_secs(600),
     )
     .await;
 
@@ -736,7 +744,7 @@ async fn live_workflow_helpers_round_trip() {
         &client,
         &identifier,
         "artifact.txt",
-        Duration::from_secs(120),
+        Duration::from_secs(600),
     )
     .await;
 }
@@ -803,7 +811,7 @@ async fn live_progress_round_trip_uses_indicatif_callbacks() {
         seed_len,
         "create_item progress bar did not reach payload length"
     );
-    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(120)).await;
+    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(600)).await;
 
     let upload_progress = ProgressBar::hidden();
     client
@@ -820,7 +828,7 @@ async fn live_progress_round_trip_uses_indicatif_callbacks() {
         extra_len,
         "upload_file progress bar did not reach payload length"
     );
-    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(120)).await;
+    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(600)).await;
 
     let bytes_progress = ProgressBar::hidden();
     let downloaded_seed = client
