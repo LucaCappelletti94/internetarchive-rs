@@ -16,10 +16,6 @@ target
 # Coverage reports
 cobertura.xml
 
-# Python bytecode caches from live CI helper checks
-__pycache__/
-*.py[cod]
-
 # Local Internet Archive S3 credentials for live tests
 .env
 .env.local

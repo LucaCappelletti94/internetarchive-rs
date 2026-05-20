@@ -69,30 +69,5 @@ jobs:
           test -n "$INTERNET_ARCHIVE_ACCESS_KEY" || { echo "Missing INTERNET_ARCHIVE_ACCESS_KEY secret"; exit 1; }
           test -n "$INTERNET_ARCHIVE_SECRET_KEY" || { echo "Missing INTERNET_ARCHIVE_SECRET_KEY secret"; exit 1; }
 
-      - name: Install official Internet Archive Python client
-        run: python3 -m pip install --user --upgrade internetarchive
-
-      - name: Probe live create with official Python client
-        id: official-client-probe
-        shell: bash
-        run: |
-          set +e
-          python3 scripts/live_ia_python_probe.py
-          status=$?
-          set -e
-          if [ "$status" -eq 77 ]; then
-            echo "skip-live-suite=true" >> "$GITHUB_OUTPUT"
-            echo "Official Internet Archive client cannot create generated live-test identifiers with these credentials; skipping Rust live suite."
-            {
-              echo "### Rust live suite skipped"
-              echo
-              echo "The official Internet Archive Python client cannot create generated live-test identifiers with these credentials."
-              echo "This indicates an Internet Archive account permission/precondition issue rather than a Rust client regression."
-            } >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          exit "$status"
-
       - name: Run live full API suite
-        if: steps.official-client-probe.outputs.skip-live-suite != 'true'
         run: cargo test --test live_smoke --all-features --locked -- --nocapture --test-threads=1
