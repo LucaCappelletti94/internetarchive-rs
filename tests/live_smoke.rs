@@ -163,6 +163,15 @@ fn generated_live_identifiers_are_bucket_safe() {
         .expect("bucket-safe live ID");
 }
 
+/// Internet Archive applies writes through an asynchronous catalog task queue and
+/// a separate search indexer, both of which can lag far behind a successful write
+/// when the shared queue is backed up (minutes, occasionally much longer). We wait
+/// a deliberately preposterous amount of time so a slow-but-healthy IA never trips
+/// the suite. The wait helpers below poll with backoff and return the instant the
+/// resource appears, so on a normal day this cap costs nothing: it only matters on
+/// IA's worst days, and we would rather wait than report a false regression.
+const PROPAGATION_WAIT: Duration = Duration::from_secs(3600);
+
 /// True for transient IA-side faults (gateway 5xx, dropped connections) that a
 /// propagation-wait loop should ride out rather than fail on.
 fn is_transient_wait_error(error: &InternetArchiveError) -> bool {
@@ -443,7 +452,7 @@ async fn live_low_level_client_api_round_trip() {
         .unwrap_or_else(|error| panic!("create item {}: {error}", identifier.as_str()));
     let mut item_guard = LiveItemGuard::new(&client, identifier.clone());
 
-    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(600)).await;
+    wait_for_item_file(&client, &identifier, "seed.txt", PROPAGATION_WAIT).await;
     assert!(client
         .get_item_by_str(identifier.as_str())
         .await
@@ -451,7 +460,7 @@ async fn live_low_level_client_api_round_trip() {
         .file("seed.txt")
         .is_some());
 
-    let search = wait_for_search_hit(&client, &identifier, Duration::from_secs(600)).await;
+    let search = wait_for_search_hit(&client, &identifier, PROPAGATION_WAIT).await;
     assert!(search
         .response
         .docs
@@ -483,7 +492,7 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("upload extra file");
-    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(600)).await;
+    wait_for_item_file(&client, &identifier, "extra.txt", PROPAGATION_WAIT).await;
     client
         .upload_file(
             &identifier,
@@ -496,7 +505,7 @@ async fn live_low_level_client_api_round_trip() {
         )
         .await
         .expect("upload bytes file");
-    wait_for_item_file(&client, &identifier, "bytes.txt", Duration::from_secs(600)).await;
+    wait_for_item_file(&client, &identifier, "bytes.txt", PROPAGATION_WAIT).await;
 
     client
         .apply_metadata_patch(
@@ -679,13 +688,7 @@ async fn live_workflow_helpers_round_trip() {
 
     let (item_guard, _) = publish_with_fresh_identifier(&client, &artifact).await;
     let identifier = item_guard.identifier().clone();
-    wait_for_item_file(
-        &client,
-        &identifier,
-        "artifact.txt",
-        Duration::from_secs(600),
-    )
-    .await;
+    wait_for_item_file(&client, &identifier, "artifact.txt", PROPAGATION_WAIT).await;
 
     let mut conflict_request = PublishRequest::new(
         identifier.clone(),
@@ -750,13 +753,7 @@ async fn live_workflow_helpers_round_trip() {
         .expect("upsert item");
     assert!(!updated.created);
     assert_eq!(updated.skipped_files, vec![String::from("artifact.txt")]);
-    wait_for_item_file(
-        &client,
-        &identifier,
-        "artifact.txt",
-        Duration::from_secs(600),
-    )
-    .await;
+    wait_for_item_file(&client, &identifier, "artifact.txt", PROPAGATION_WAIT).await;
 }
 
 #[cfg(feature = "indicatif")]
@@ -821,7 +818,7 @@ async fn live_progress_round_trip_uses_indicatif_callbacks() {
         seed_len,
         "create_item progress bar did not reach payload length"
     );
-    wait_for_item_file(&client, &identifier, "seed.txt", Duration::from_secs(600)).await;
+    wait_for_item_file(&client, &identifier, "seed.txt", PROPAGATION_WAIT).await;
 
     let upload_progress = ProgressBar::hidden();
     client
@@ -838,7 +835,7 @@ async fn live_progress_round_trip_uses_indicatif_callbacks() {
         extra_len,
         "upload_file progress bar did not reach payload length"
     );
-    wait_for_item_file(&client, &identifier, "extra.txt", Duration::from_secs(600)).await;
+    wait_for_item_file(&client, &identifier, "extra.txt", PROPAGATION_WAIT).await;
 
     let bytes_progress = ProgressBar::hidden();
     let downloaded_seed = client
