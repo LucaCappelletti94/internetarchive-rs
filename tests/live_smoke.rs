@@ -163,6 +163,15 @@ fn generated_live_identifiers_are_bucket_safe() {
         .expect("bucket-safe live ID");
 }
 
+/// True for transient IA-side faults (gateway 5xx, dropped connections) that a
+/// propagation-wait loop should ride out rather than fail on.
+fn is_transient_wait_error(error: &InternetArchiveError) -> bool {
+    matches!(
+        error,
+        InternetArchiveError::Http { status, .. } if status.is_server_error()
+    ) || matches!(error, InternetArchiveError::Transport(_))
+}
+
 async fn wait_for_item_file(
     client: &InternetArchiveClient,
     identifier: &ItemIdentifier,
@@ -176,6 +185,7 @@ async fn wait_for_item_file(
         match client.get_item(identifier).await {
             Ok(item) if item.file(filename).is_some() => return,
             Ok(_) | Err(InternetArchiveError::ItemNotFound { .. }) => {}
+            Err(ref error) if is_transient_wait_error(error) => {}
             Err(error) => panic!("failed while waiting for file visibility: {error}"),
         }
 
@@ -215,8 +225,8 @@ async fn wait_for_search_hit(
                 return search;
             }
             Ok(_) => {}
-            Err(InternetArchiveError::Http { status, .. }) if status.is_server_error() => {}
             Err(InternetArchiveError::InvalidState(_)) => {}
+            Err(ref error) if is_transient_wait_error(error) => {}
             Err(error) => panic!("failed while waiting for search visibility: {error}"),
         }
 
@@ -441,7 +451,7 @@ async fn live_low_level_client_api_round_trip() {
         .file("seed.txt")
         .is_some());
 
-    let search = wait_for_search_hit(&client, &identifier, Duration::from_secs(180)).await;
+    let search = wait_for_search_hit(&client, &identifier, Duration::from_secs(600)).await;
     assert!(search
         .response
         .docs
