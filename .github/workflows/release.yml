@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  # Re-run the full push/PR suite against the exact tagged commit. Publishing is
+  # gated on this passing, so a red state can never reach crates.io.
+  ci:
+    name: CI gate
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/ci.yml
+
+  # Re-run the daily suite (feature matrix, advisories, and the live archive.org
+  # API tests) against the tagged commit. Needs the live credentials.
+  live:
+    name: Live gate
+    secrets: inherit
+    uses: ./.github/workflows/live-daily.yml
+
+  publish:
+    name: Publish to crates.io
+    needs: [ci, live]
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify tag matches crate version
+        shell: bash
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          crate_version="$(grep -m1 '^version = ' Cargo.toml | sed -E 's/^version = "(.+)"/\1/')"
+          if [ "$tag_version" != "$crate_version" ]; then
+            echo "Tag ${GITHUB_REF_NAME} (version ${tag_version}) does not match Cargo.toml version ${crate_version}."
+            exit 1
+          fi
+          echo "Publishing version ${crate_version} from tag ${GITHUB_REF_NAME}."
+
+      - name: Authenticate to crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

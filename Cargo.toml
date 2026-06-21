@@ -1,6 +1,6 @@
 [package]
 name = "internetarchive-rs"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.86"
 description = "Async Rust client for Internet Archive item metadata, search, uploads, metadata updates, and downloads."
@@ -11,12 +11,27 @@ keywords = ["internet-archive", "archive-org", "uploads", "downloads"]
 categories = ["api-bindings", "multimedia"]
 
 [package.metadata.docs.rs]
-all-features = true
+features = ["rustls-ring-tls", "indicatif"]
+no-default-features = true
+
+[package.metadata.cargo-semver-checks.lints]
+feature_not_enabled_by_default = "warn"
 
 [features]
-default = ["rustls-tls"]
+default = ["rustls-ring-tls"]
 native-tls = ["reqwest/native-tls"]
+# Legacy: rustls with reqwest's default provider (aws-lc-rs, a C build).
 rustls-tls = ["reqwest/rustls"]
+# rustls with the pure-ring provider and no aws-lc. Installs ring as the
+# process-default provider at client-build time (see `ensure_rustls_provider`).
+rustls-ring-tls = [
+    "dep:rustls",
+    "reqwest/rustls-no-provider",
+    "rustls/ring",
+    "rustls/std",
+]
+# rustls with no provider, for a dependent that installs its own.
+rustls-no-provider = ["reqwest/rustls-no-provider"]
 indicatif = ["dep:futures-core", "dep:indicatif"]
 
 [dependencies]
@@ -30,6 +45,7 @@ mime_guess = "2.0"
 percent-encoding = "2.3"
 quick-xml = { version = "0.39.4", features = ["serialize"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["form", "json", "query", "stream"] }
+rustls = { version = "0.23", default-features = false, optional = true }
 secrecy = "0.10"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
