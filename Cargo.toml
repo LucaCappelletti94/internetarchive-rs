@@ -43,7 +43,7 @@ json-patch = "4.2"
 mime = "0.3"
 mime_guess = "2.0"
 percent-encoding = "2.3"
-quick-xml = { version = "0.39.4", features = ["serialize"] }
+quick-xml = { version = "0.40.1", features = ["serialize"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["form", "json", "query", "stream"] }
 rustls = { version = "0.23", default-features = false, optional = true }
 secrecy = "0.10"
