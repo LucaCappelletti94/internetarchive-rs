@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "internetarchive-rs"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "axum",
  "bytes",
@@ -677,6 +677,7 @@ dependencies = [
  "percent-encoding",
  "quick-xml",
  "reqwest",
+ "rustls",
  "secrecy",
  "serde",
  "serde_json",
@@ -1204,6 +1205,7 @@ checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

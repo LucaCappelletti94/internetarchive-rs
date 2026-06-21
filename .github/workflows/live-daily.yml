@@ -4,6 +4,7 @@ on:
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -13,6 +14,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  advisories:
+    name: Advisories
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@cargo-audit
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      - name: Audit dependencies for new advisories
+        run: cargo audit --deny warnings
+
+      - name: Check advisories, licenses, bans, and sources
+        run: cargo deny check
+
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
     runs-on: ubuntu-latest
@@ -24,10 +51,12 @@ jobs:
             command: cargo test --locked
           - name: indicatif
             command: cargo test --features indicatif --locked
-          - name: all-features
-            command: cargo test --all-features --locked
+          - name: ring-tls-all
+            command: cargo test --no-default-features --features rustls-ring-tls,indicatif --locked
           - name: native-tls
             command: cargo test --no-default-features --features native-tls --locked
+          - name: rustls-tls
+            command: cargo test --no-default-features --features rustls-tls,indicatif --locked
 
     steps:
       - name: Checkout
@@ -70,4 +99,4 @@ jobs:
           test -n "$INTERNET_ARCHIVE_SECRET_KEY" || { echo "Missing INTERNET_ARCHIVE_SECRET_KEY secret"; exit 1; }
 
       - name: Run live full API suite
-        run: cargo test --test live_smoke --all-features --locked -- --nocapture --test-threads=1
+        run: cargo test --test live_smoke --no-default-features --features rustls-ring-tls,indicatif --locked -- --nocapture --test-threads=1

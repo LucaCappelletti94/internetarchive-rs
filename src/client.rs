@@ -36,6 +36,24 @@ use crate::search::SearchQuery;
 use crate::upload::{DeleteOptions, UploadOptions, UploadSource, UploadSpec};
 use crate::ItemIdentifier;
 
+/// Installs `ring` as the process-default rustls crypto provider.
+///
+/// With the `rustls-ring-tls` feature, reqwest is built against
+/// `rustls-no-provider`, so a crypto provider must be installed as the process
+/// default before the first TLS client is constructed. This installs `ring`
+/// once. The call is idempotent and a no-op for every other build.
+#[cfg(feature = "rustls-ring-tls")]
+pub(crate) fn ensure_rustls_provider() {
+    static INSTALL: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INSTALL.get_or_init(|| {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
+/// No-op crypto-provider installer for builds without `rustls-ring-tls`.
+#[cfg(not(feature = "rustls-ring-tls"))]
+pub(crate) fn ensure_rustls_provider() {}
+
 /// LOW-auth credentials for Internet Archive programmatic access.
 #[derive(Clone)]
 pub struct Auth {
@@ -169,6 +187,7 @@ impl InternetArchiveClientBuilder {
     ///
     /// Returns an error if the underlying HTTP clients cannot be built.
     pub fn build(self) -> Result<InternetArchiveClient, InternetArchiveError> {
+        ensure_rustls_provider();
         let user_agent = self
             .user_agent
             .unwrap_or_else(|| format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")));
@@ -2478,6 +2497,7 @@ mod tests {
     #[cfg(feature = "indicatif")]
     #[tokio::test]
     async fn replayable_body_apply_with_progress_sets_lengths_for_paths_and_bytes() {
+        crate::client::ensure_rustls_provider();
         let client = reqwest::Client::new();
 
         let bytes_progress = ProgressBar::hidden();

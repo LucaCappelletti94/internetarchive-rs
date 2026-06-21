@@ -390,6 +390,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
+        crate::client::ensure_rustls_provider();
         let response = reqwest::get(format!("http://{addr}/")).await.unwrap();
         let error = InternetArchiveError::from_response(response).await;
         match error {
