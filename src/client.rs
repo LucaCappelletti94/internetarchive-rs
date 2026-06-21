@@ -2497,6 +2497,7 @@ mod tests {
     #[cfg(feature = "indicatif")]
     #[tokio::test]
     async fn replayable_body_apply_with_progress_sets_lengths_for_paths_and_bytes() {
+        crate::client::ensure_rustls_provider();
         let client = reqwest::Client::new();
 
         let bytes_progress = ProgressBar::hidden();
