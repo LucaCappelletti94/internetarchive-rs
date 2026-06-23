@@ -106,7 +106,7 @@ Authenticated write helpers use LOW auth credentials and read these standard env
 
 ## Retries
 
-Uploads and downloads are retried automatically on transient failures. A transfer is retried when it fails with a transient transport error (a connection or timeout failure) or when Internet Archive returns a rate-limit (`429`) or a transient server-error (`500`, `502`, `503`, `504`) status, which includes the `503 SlowDown` response IA uses for throttling. Retries use exponential backoff bounded by [`RetryOptions`](https://docs.rs/internetarchive-rs/latest/internetarchive_rs/retry/struct.RetryOptions.html), which defaults to 3 retries starting at 500 ms and capped at 8 seconds. Reads, searches, and metadata writes are not retried by this mechanism. Configure it with `InternetArchiveClient::builder().retry_options(...)`, and set `max_retries` to zero to disable retrying.
+Uploads and downloads are retried automatically on transient failures. A transfer is retried when it fails with a transient transport error (a connection or timeout failure) or when Internet Archive returns a rate-limit (`429`) or a transient server-error (`500`, `502`, `503`, `504`) status, which includes the `503 SlowDown` response IA uses for throttling. Retries use exponential backoff bounded by `RetryOptions`, which defaults to 3 retries starting at 500 ms and capped at 8 seconds. Reads, searches, and metadata writes are not retried by this mechanism. Configure it with `InternetArchiveClient::builder().retry_options(...)`, and set `max_retries` to zero to disable retrying.
 
 ## Identifier Rules
 
