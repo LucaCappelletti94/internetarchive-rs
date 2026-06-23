@@ -559,9 +559,8 @@ impl InternetArchiveClient {
         spec: &UploadSpec,
         options: &UploadOptions,
     ) -> Result<(), InternetArchiveError> {
-        let header_encoding = metadata.as_header_encoding();
-        let remainder = header_encoding.remainder.clone();
-        self.put_object(identifier, spec, options, Some(header_encoding), true)
+        let remainder = self
+            .create_item_object(identifier, metadata, spec, options)
             .await?;
 
         if !remainder.as_map().is_empty() {
@@ -572,6 +571,23 @@ impl InternetArchiveClient {
         }
 
         Ok(())
+    }
+
+    /// Creates the item object via the IA-S3 PUT (header metadata plus bucket
+    /// creation) and returns the non-header metadata remainder that still needs
+    /// an MDAPI write. Does not wait for catalog visibility.
+    pub(crate) async fn create_item_object(
+        &self,
+        identifier: &ItemIdentifier,
+        metadata: &ItemMetadata,
+        spec: &UploadSpec,
+        options: &UploadOptions,
+    ) -> Result<ItemMetadata, InternetArchiveError> {
+        let header_encoding = metadata.as_header_encoding();
+        let remainder = header_encoding.remainder.clone();
+        self.put_object(identifier, spec, options, Some(header_encoding), true)
+            .await?;
+        Ok(remainder)
     }
 
     /// Creates a new item while updating an `indicatif` progress bar for the
@@ -1151,8 +1167,29 @@ impl InternetArchiveClient {
     pub(crate) async fn wait_until<T, F, Fut>(
         &self,
         label: &'static str,
-        mut action: F,
+        action: F,
     ) -> Result<T, InternetArchiveError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, InternetArchiveError>>,
+    {
+        match self.try_wait_until(self.poll.max_wait, action).await? {
+            Some(value) => Ok(value),
+            None => Err(InternetArchiveError::Timeout(label)),
+        }
+    }
+
+    /// Polls `action` until it succeeds or `max_wait` elapses.
+    ///
+    /// Returns `Ok(Some(value))` on success, `Ok(None)` when the wait times out
+    /// while the last failure was a transient not-yet-visible condition, and
+    /// `Err` for any other error. Backoff reuses the configured
+    /// [`PollOptions`](crate::poll::PollOptions) delays.
+    async fn try_wait_until<T, F, Fut>(
+        &self,
+        max_wait: Duration,
+        mut action: F,
+    ) -> Result<Option<T>, InternetArchiveError>
     where
         F: FnMut() -> Fut,
         Fut: std::future::Future<Output = Result<T, InternetArchiveError>>,
@@ -1162,21 +1199,55 @@ impl InternetArchiveClient {
 
         loop {
             match action().await {
-                Ok(value) => return Ok(value),
-                Err(error)
-                    if started.elapsed() < self.poll.max_wait
-                        && is_retryable_wait_error(&error) =>
-                {
+                Ok(value) => return Ok(Some(value)),
+                Err(error) if is_retryable_wait_error(&error) => {
+                    if started.elapsed() >= max_wait {
+                        return Ok(None);
+                    }
                     tokio::time::sleep(delay).await;
                     delay = std::cmp::min(delay.saturating_mul(2), self.poll.max_delay);
                 }
                 Err(error) => return Err(error),
             }
-
-            if started.elapsed() >= self.poll.max_wait {
-                return Err(InternetArchiveError::Timeout(label));
-            }
         }
+    }
+
+    /// Waits up to `max_wait` for an item to become visible, without failing on
+    /// timeout. Returns `Ok(None)` when the item is not yet catalogued.
+    pub(crate) async fn try_wait_for_item(
+        &self,
+        identifier: &ItemIdentifier,
+        max_wait: Duration,
+    ) -> Result<Option<Item>, InternetArchiveError> {
+        self.try_wait_until(max_wait, || async { self.get_item(identifier).await })
+            .await
+    }
+
+    /// Waits up to `max_wait` for an item to project the expected files and
+    /// metadata, without failing on timeout. Returns `Ok(None)` when the
+    /// projection has not completed in time.
+    pub(crate) async fn try_wait_for_item_projection(
+        &self,
+        identifier: &ItemIdentifier,
+        expected_files: &[String],
+        expected_metadata: &ItemMetadata,
+        max_wait: Duration,
+    ) -> Result<Option<Item>, InternetArchiveError> {
+        self.try_wait_until(max_wait, || async {
+            let item = self.get_item(identifier).await?;
+            if expected_files
+                .iter()
+                .all(|filename| item.file(filename).is_some())
+                && metadata_contains_projection(&item.metadata, expected_metadata)
+            {
+                Ok(item)
+            } else {
+                Err(InternetArchiveError::ItemNotFound {
+                    identifier: identifier.to_string(),
+                })
+            }
+        })
+        .await
     }
 
     /// Runs a transfer operation, retrying it on transient failures.

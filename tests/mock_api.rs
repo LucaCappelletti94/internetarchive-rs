@@ -123,13 +123,15 @@ async fn publish_item_creates_item_and_patches_non_header_metadata() {
             .extra_json("custom", serde_json::json!({"nested": true}))
             .build(),
         vec![UploadSpec::from_bytes("demo.txt", b"hello".to_vec())],
-    );
+    )
+    .wait_for_visibility(std::time::Duration::from_secs(2));
     let outcome = client.publish_item(request).await.unwrap();
 
     assert!(outcome.created);
     assert_eq!(outcome.uploaded_files, vec!["demo.txt".to_owned()]);
     assert!(outcome.metadata_changed);
-    assert_eq!(outcome.item.identifier().unwrap(), identifier);
+    assert!(outcome.projection_confirmed());
+    assert_eq!(outcome.item.unwrap().identifier().unwrap(), identifier);
 
     let requests = server.requests();
     let upload = requests
@@ -309,19 +311,23 @@ async fn upsert_item_creates_missing_items_and_backfills_stale_metadata_projecti
     );
 
     let outcome = client
-        .upsert_item(PublishRequest::new(
-            identifier.clone(),
-            ItemMetadata::builder().title("Backfilled title").build(),
-            vec![UploadSpec::from_bytes("demo.txt", b"hello".to_vec())],
-        ))
+        .upsert_item(
+            PublishRequest::new(
+                identifier.clone(),
+                ItemMetadata::builder().title("Backfilled title").build(),
+                vec![UploadSpec::from_bytes("demo.txt", b"hello".to_vec())],
+            )
+            .wait_for_visibility(std::time::Duration::from_secs(2)),
+        )
         .await
         .unwrap();
 
     assert!(outcome.created);
     assert!(outcome.metadata_changed);
     assert_eq!(outcome.uploaded_files, vec!["demo.txt".to_owned()]);
-    assert_eq!(outcome.item.identifier().unwrap(), identifier);
-    assert_eq!(outcome.item.metadata.title(), Some("Backfilled title"));
+    let item = outcome.item.as_ref().unwrap();
+    assert_eq!(item.identifier().unwrap(), identifier);
+    assert_eq!(item.metadata.title(), Some("Backfilled title"));
 
     let requests = server.requests();
     let patch = requests
@@ -366,6 +372,7 @@ async fn upsert_item_does_not_emit_collection_removal_when_archive_returns_super
         vec![UploadSpec::from_bytes("demo.txt", b"hello".to_vec())],
     );
     request.conflict_policy = FileConflictPolicy::Skip;
+    request.wait_for_visibility = Some(std::time::Duration::from_secs(2));
 
     let outcome = client.upsert_item(request).await.unwrap();
 
@@ -373,7 +380,13 @@ async fn upsert_item_does_not_emit_collection_removal_when_archive_returns_super
     assert_eq!(outcome.skipped_files, vec!["demo.txt".to_owned()]);
     assert!(!outcome.metadata_changed);
     assert_eq!(
-        outcome.item.metadata.collections().unwrap(),
+        outcome
+            .item
+            .as_ref()
+            .unwrap()
+            .metadata
+            .collections()
+            .unwrap(),
         vec![
             "test_collection".to_owned(),
             "internetarchivebooks".to_owned(),

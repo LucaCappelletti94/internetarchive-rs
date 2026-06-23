@@ -166,7 +166,7 @@ fn inspection_traits_cover_internet_archive_types() {
     );
 
     let outcome = PublishOutcome {
-        item: item.clone(),
+        item: Some(item.clone()),
         created: true,
         uploaded_files: vec!["demo.txt".to_owned()],
         skipped_files: Vec::new(),
@@ -174,7 +174,13 @@ fn inspection_traits_cover_internet_archive_types() {
     };
     assert_eq!(PublicationOutcome::created(&outcome), Some(true));
     assert_eq!(
-        outcome.public_resource().identifier().unwrap().as_str(),
+        outcome
+            .public_resource()
+            .as_ref()
+            .unwrap()
+            .identifier()
+            .unwrap()
+            .as_str(),
         "demo-item"
     );
 }
@@ -303,18 +309,6 @@ async fn publication_capability_traits_route_to_existing_workflows() {
         "/s3-direct/demo-item/demo.txt",
         QueuedResponse::text(StatusCode::OK, ""),
     );
-    for _ in 0..2 {
-        create_server.enqueue_json(
-            Method::GET,
-            "/metadata/demo-item",
-            StatusCode::OK,
-            serde_json::json!({
-                "files": [{"name": "demo.txt", "size": "5"}],
-                "metadata": {"identifier": "demo-item", "title": "Demo item"}
-            }),
-        );
-    }
-
     let created = CreatePublication::create_publication(
         &create_client,
         CreatePublicationRequest::new(
@@ -326,10 +320,9 @@ async fn publication_capability_traits_route_to_existing_workflows() {
     .await
     .unwrap();
     assert_eq!(PublicationOutcome::created(&created), Some(true));
-    assert_eq!(
-        created.public_resource().identifier().unwrap().as_str(),
-        "demo-item"
-    );
+    // The default workflow does not wait for catalog projection, so the trait
+    // routes through with no confirmed public resource yet.
+    assert!(created.public_resource().is_none());
 
     let create_requests = create_server.requests();
     assert!(create_requests

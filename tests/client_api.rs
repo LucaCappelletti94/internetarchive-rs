@@ -715,15 +715,19 @@ async fn workflow_outcome_waits_for_uploaded_file_visibility() {
     );
 
     let outcome = client
-        .publish_item(internetarchive_rs::PublishRequest::new(
-            identifier,
-            ItemMetadata::builder().title("Demo item").build(),
-            vec![UploadSpec::from_bytes("demo.txt", b"hello")],
-        ))
+        .publish_item(
+            internetarchive_rs::PublishRequest::new(
+                identifier,
+                ItemMetadata::builder().title("Demo item").build(),
+                vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+            )
+            .wait_for_visibility(std::time::Duration::from_secs(2)),
+        )
         .await
         .unwrap();
 
-    assert!(outcome.item.file("demo.txt").is_some());
+    assert!(outcome.projection_confirmed());
+    assert!(outcome.item.unwrap().file("demo.txt").is_some());
 }
 
 #[tokio::test]
@@ -785,9 +789,10 @@ async fn workflow_outcome_waits_for_metadata_visibility() {
         vec![UploadSpec::from_bytes("demo.txt", b"hello")],
     );
     request.conflict_policy = FileConflictPolicy::Skip;
+    request.wait_for_visibility = Some(std::time::Duration::from_secs(2));
 
     let outcome = client.upsert_item(request).await.unwrap();
-    assert_eq!(outcome.item.metadata.title(), Some("New title"));
+    assert_eq!(outcome.item.unwrap().metadata.title(), Some("New title"));
 }
 
 #[tokio::test]
@@ -845,9 +850,10 @@ async fn workflow_projection_wait_retries_transient_server_errors() {
         vec![UploadSpec::from_bytes("demo.txt", b"hello")],
     );
     request.conflict_policy = FileConflictPolicy::Skip;
+    request.wait_for_visibility = Some(std::time::Duration::from_secs(2));
 
     let outcome = client.upsert_item(request).await.unwrap();
-    assert_eq!(outcome.item.metadata.title(), Some("New title"));
+    assert_eq!(outcome.item.unwrap().metadata.title(), Some("New title"));
 }
 
 #[tokio::test]
@@ -1118,4 +1124,150 @@ fn public_helper_apis_cover_remaining_daily_surface() {
 
     let task_id = TaskId::from(7_u64);
     assert_eq!(task_id.to_string(), "7");
+}
+
+#[tokio::test]
+async fn publish_item_default_returns_without_waiting_for_visibility() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue(
+        Method::GET,
+        "/metadata/demo-item",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![(
+                String::from("content-type"),
+                String::from("application/json"),
+            )],
+            b"[]".to_vec(),
+        ),
+    );
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/demo.txt",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+
+    let outcome = client
+        .publish_item(internetarchive_rs::PublishRequest::new(
+            identifier,
+            ItemMetadata::builder().title("Demo item").build(),
+            vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+        ))
+        .await
+        .unwrap();
+
+    assert!(outcome.created);
+    assert_eq!(outcome.uploaded_files, vec![String::from("demo.txt")]);
+    assert!(outcome.item.is_none());
+    assert!(!outcome.projection_confirmed());
+
+    // Only the existence check touched the metadata endpoint. No projection
+    // polling means a brand-new item cannot make the workflow hang.
+    let metadata_gets = server
+        .requests()
+        .iter()
+        .filter(|request| request.method == Method::GET && request.path == "/metadata/demo-item")
+        .count();
+    assert_eq!(metadata_gets, 1);
+}
+
+#[tokio::test]
+async fn publish_item_default_does_not_block_on_non_header_metadata() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue(
+        Method::GET,
+        "/metadata/demo-item",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![(
+                String::from("content-type"),
+                String::from("application/json"),
+            )],
+            b"[]".to_vec(),
+        ),
+    );
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/demo.txt",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+
+    // Nested metadata lands in the non-header remainder. By default the workflow
+    // must not block waiting for the item to be catalogued to apply it.
+    let outcome = client
+        .publish_item(internetarchive_rs::PublishRequest::new(
+            identifier,
+            ItemMetadata::builder()
+                .title("Demo item")
+                .extra_json("custom", serde_json::json!({"nested": true}))
+                .build(),
+            vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+        ))
+        .await
+        .unwrap();
+
+    assert!(outcome.created);
+    assert!(outcome.item.is_none());
+    assert!(!outcome.projection_confirmed());
+    assert!(!outcome.metadata_changed);
+
+    let requests = server.requests();
+    let metadata_gets = requests
+        .iter()
+        .filter(|request| request.method == Method::GET && request.path == "/metadata/demo-item")
+        .count();
+    assert_eq!(metadata_gets, 1);
+    assert!(!requests
+        .iter()
+        .any(|request| request.method == Method::POST && request.path == "/metadata/demo-item"));
+}
+
+#[tokio::test]
+async fn upsert_item_visibility_timeout_still_returns_ok() {
+    let server = MockInternetArchiveServer::start().await;
+    let client = server.client();
+    let identifier = ItemIdentifier::new("demo-item").unwrap();
+
+    server.enqueue(
+        Method::GET,
+        "/metadata/demo-item",
+        QueuedResponse::bytes(
+            StatusCode::OK,
+            vec![(
+                String::from("content-type"),
+                String::from("application/json"),
+            )],
+            b"[]".to_vec(),
+        ),
+    );
+    server.enqueue(
+        Method::PUT,
+        "/s3/demo-item/demo.txt",
+        QueuedResponse::text(StatusCode::OK, ""),
+    );
+    // The item never projects, so the bounded visibility wait must time out and
+    // still return Ok with no confirmed item.
+
+    let outcome = client
+        .upsert_item(
+            internetarchive_rs::PublishRequest::new(
+                identifier,
+                ItemMetadata::builder().title("Demo item").build(),
+                vec![UploadSpec::from_bytes("demo.txt", b"hello")],
+            )
+            .wait_for_visibility(std::time::Duration::from_millis(30)),
+        )
+        .await
+        .unwrap();
+
+    assert!(outcome.created);
+    assert_eq!(outcome.uploaded_files, vec![String::from("demo.txt")]);
+    assert!(outcome.item.is_none());
+    assert!(!outcome.projection_confirmed());
 }
