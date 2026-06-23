@@ -152,7 +152,7 @@ impl SearchResultsLike for SearchResponse {
 }
 
 impl PublicationOutcome for PublishOutcome {
-    type PublicResource = Item;
+    type PublicResource = Option<Item>;
 
     fn public_resource(&self) -> &Self::PublicResource {
         &self.item

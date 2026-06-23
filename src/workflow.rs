@@ -1,5 +1,7 @@
 //! Higher-level item publication and update workflows.
 
+use std::time::Duration;
+
 use crate::client::InternetArchiveClient;
 use crate::error::InternetArchiveError;
 use crate::metadata::{metadata_contains_projection, ItemMetadata};
@@ -20,6 +22,14 @@ pub struct PublishRequest {
     pub conflict_policy: FileConflictPolicy,
     /// Per-upload options.
     pub upload_options: UploadOptions,
+    /// Optional bounded wait for catalog visibility after every file uploads.
+    ///
+    /// `None` (the default) returns as soon as all uploads complete, without
+    /// requiring the item to be queryable in the public catalog first. `Some(d)`
+    /// polls up to `d` for the item to project the uploaded files and metadata,
+    /// and still returns `Ok` if that wait times out. A successful upload is
+    /// never turned into an error by a visibility timeout.
+    pub wait_for_visibility: Option<Duration>,
 }
 
 impl PublishRequest {
@@ -36,15 +46,34 @@ impl PublishRequest {
             uploads,
             conflict_policy: FileConflictPolicy::Overwrite,
             upload_options: UploadOptions::default(),
+            wait_for_visibility: None,
         }
+    }
+
+    /// Sets a bounded wait for catalog visibility after uploading.
+    ///
+    /// When set, the workflow polls up to `max_wait` for the item to project
+    /// into the public catalog and populates [`PublishOutcome::item`] on
+    /// success. A timeout still returns `Ok`, leaving `item` as `None`.
+    #[must_use]
+    pub fn wait_for_visibility(mut self, max_wait: Duration) -> Self {
+        self.wait_for_visibility = Some(max_wait);
+        self
     }
 }
 
 /// Result returned by high-level publish or upsert helpers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PublishOutcome {
-    /// Final item state after the workflow.
-    pub item: Item,
+    /// Final item state after the workflow, when catalog projection was
+    /// confirmed.
+    ///
+    /// `None` means every file uploaded successfully but the item was not
+    /// confirmed visible in the public catalog before returning. This is the
+    /// default (no visibility wait) and also the result of an opt-in
+    /// [`PublishRequest::wait_for_visibility`] wait that timed out. A `None`
+    /// here is not a failure: the bytes landed.
+    pub item: Option<Item>,
     /// Whether the item was created during this workflow.
     pub created: bool,
     /// File names uploaded during this workflow.
@@ -53,6 +82,18 @@ pub struct PublishOutcome {
     pub skipped_files: Vec<String>,
     /// Whether metadata was updated through MDAPI after the upload step.
     pub metadata_changed: bool,
+}
+
+impl PublishOutcome {
+    /// Returns whether the item was confirmed projected into the public catalog.
+    ///
+    /// Equivalent to [`PublishOutcome::item`] being `Some`. A `false` result
+    /// does not mean the upload failed, only that catalog visibility was not
+    /// confirmed before returning.
+    #[must_use]
+    pub fn projection_confirmed(&self) -> bool {
+        self.item.is_some()
+    }
 }
 
 impl InternetArchiveClient {
@@ -123,7 +164,7 @@ impl InternetArchiveClient {
 
         let mut uploaded_files = Vec::new();
         let mut skipped_files = Vec::new();
-        let mut metadata_changed;
+        let metadata_changed;
 
         if let Some(existing) = existing.as_ref() {
             for spec in &request.uploads {
@@ -157,40 +198,28 @@ impl InternetArchiveClient {
                 .await?;
             metadata_changed = response.task_id.is_some();
         } else {
-            metadata_changed = !request
-                .metadata
-                .as_header_encoding()
-                .remainder
-                .as_map()
-                .is_empty();
-            let first = &request.uploads[0];
-            self.create_item(
-                &request.identifier,
-                &request.metadata,
-                first,
-                &request.upload_options,
-            )
-            .await?;
-            uploaded_files.push(first.filename.clone());
-
-            for spec in request.uploads.iter().skip(1) {
-                self.upload_file(&request.identifier, spec, &request.upload_options)
-                    .await?;
-                uploaded_files.push(spec.filename.clone());
-            }
-
-            let current = self.wait_for_item(&request.identifier).await?;
-            if !metadata_contains_projection(&current.metadata, &request.metadata) {
-                let response = self
-                    .update_item_metadata(&request.identifier, &request.metadata)
-                    .await?;
-                metadata_changed = response.task_id.is_some();
-            }
+            let (created_files, created_changed) = self.create_item_and_reconcile(&request).await?;
+            uploaded_files = created_files;
+            metadata_changed = created_changed;
         }
 
-        let item = self
-            .wait_for_item_projection(&request.identifier, &uploaded_files, &request.metadata)
-            .await?;
+        // Catalog projection is eventually consistent and can take many minutes
+        // on a fresh item. A successful upload returns immediately with `item`
+        // as `None` unless the caller opted into a bounded visibility wait, which
+        // still returns `Ok` (with `item` as `None`) on timeout.
+        let item = match request.wait_for_visibility {
+            Some(max_wait) => {
+                self.try_wait_for_item_projection(
+                    &request.identifier,
+                    &uploaded_files,
+                    &request.metadata,
+                    max_wait,
+                )
+                .await?
+            }
+            None => None,
+        };
+
         Ok(PublishOutcome {
             item,
             created,
@@ -198,6 +227,56 @@ impl InternetArchiveClient {
             skipped_files,
             metadata_changed,
         })
+    }
+
+    /// Creates a brand-new item, uploads the remaining files, and reconciles
+    /// non-header metadata when the caller opted into a visibility wait.
+    ///
+    /// Returns the uploaded file names and whether metadata was written through
+    /// MDAPI after the create step.
+    async fn create_item_and_reconcile(
+        &self,
+        request: &PublishRequest,
+    ) -> Result<(Vec<String>, bool), InternetArchiveError> {
+        let first = &request.uploads[0];
+        // Create the item with header metadata only, without blocking on catalog
+        // visibility. Non-header (nested or complex) metadata is reconciled below
+        // only when the caller opted into a wait, so a brand-new item never hangs
+        // by default.
+        self.create_item_object(
+            &request.identifier,
+            &request.metadata,
+            first,
+            &request.upload_options,
+        )
+        .await?;
+        let mut uploaded_files = vec![first.filename.clone()];
+
+        for spec in request.uploads.iter().skip(1) {
+            self.upload_file(&request.identifier, spec, &request.upload_options)
+                .await?;
+            uploaded_files.push(spec.filename.clone());
+        }
+
+        let mut metadata_changed = false;
+        // Reconciling non-header metadata needs the new item to be catalogued,
+        // which is eventually consistent, so only do it when the caller opted
+        // into a visibility wait. The wait is non-fatal.
+        if let Some(max_wait) = request.wait_for_visibility {
+            if let Some(current) = self
+                .try_wait_for_item(&request.identifier, max_wait)
+                .await?
+            {
+                if !metadata_contains_projection(&current.metadata, &request.metadata) {
+                    let response = self
+                        .update_item_metadata(&request.identifier, &request.metadata)
+                        .await?;
+                    metadata_changed = response.task_id.is_some();
+                }
+            }
+        }
+
+        Ok((uploaded_files, metadata_changed))
     }
 }
 
