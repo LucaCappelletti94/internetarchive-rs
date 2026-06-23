@@ -104,6 +104,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 Authenticated write helpers use LOW auth credentials and read these standard environment variables:
 `INTERNET_ARCHIVE_ACCESS_KEY` and `INTERNET_ARCHIVE_SECRET_KEY`. You can create S3 credentials from the official Internet Archive API key page at `https://archive.org/account/s3.php`.
 
+## Retries
+
+Uploads and downloads are retried automatically on transient failures. A transfer is retried when it fails with a transient transport error (a connection or timeout failure) or when Internet Archive returns a rate-limit (`429`) or a transient server-error (`500`, `502`, `503`, `504`) status, which includes the `503 SlowDown` response IA uses for throttling. Retries use exponential backoff bounded by `RetryOptions`, which defaults to 3 retries starting at 500 ms and capped at 8 seconds. Reads, searches, and metadata writes are not retried by this mechanism. Configure it with `InternetArchiveClient::builder().retry_options(...)`, and set `max_retries` to zero to disable retrying.
+
 ## Identifier Rules
 
 General item identifiers follow the official [Internet Archive metadata schema](https://archive.org/developers/metadata-schema/index.html#archive-org-identifiers): ASCII letters and digits, underscores, dashes, and periods are allowed. The first character must be a letter or digit. The maximum length is 100 characters. IA-S3 maps items to S3-style buckets when creating new items, so create, publish, and upsert paths that create an item validate a conservative bucket-compatible subset locally before making that create request: 3 to 63 characters, lowercase ASCII letters, digits, periods, and dashes only, starting and ending with a letter or digit, with no adjacent periods, no period next to a dash, and no IPv4-address shape. This bucket-creation check is intentionally narrower than IA's general identifier rules and the Python client's optional S3 identifier validator. Existing-item upload, delete, and upload-limit checks still accept the broader documented item identifier shape and leave any endpoint-specific rejection to IA. Identifier validation failures are returned as `InternetArchiveError::Identifier`.
@@ -113,7 +117,7 @@ General item identifiers follow the official [Internet Archive metadata schema](
 Enable the optional `indicatif` feature if you want upload and download helpers that update a progress bar:
 
 ```toml
-internetarchive-rs = { version = "0.2", features = ["indicatif"] }
+internetarchive-rs = { version = "0.3", features = ["indicatif"] }
 ```
 
 The crate re-exports `indicatif` when that feature is enabled, so you can use `internetarchive_rs::indicatif::ProgressBar` without adding a separate direct dependency.

@@ -32,6 +32,7 @@ use crate::metadata::{
 };
 use crate::model::{Item, MetadataWriteResponse, S3LimitCheck, SearchResponse, TaskSubmission};
 use crate::poll::PollOptions;
+use crate::retry::{is_retryable_status, is_retryable_transfer_error, RetryOptions};
 use crate::search::SearchQuery;
 use crate::upload::{DeleteOptions, UploadOptions, UploadSource, UploadSpec};
 use crate::ItemIdentifier;
@@ -133,6 +134,7 @@ pub struct InternetArchiveClientBuilder {
     auth: Option<Auth>,
     endpoint: Endpoint,
     poll: PollOptions,
+    retry: RetryOptions,
     user_agent: Option<String>,
     request_timeout: Option<Duration>,
     connect_timeout: Option<Duration>,
@@ -181,6 +183,13 @@ impl InternetArchiveClientBuilder {
         self
     }
 
+    /// Overrides the retry behavior for transient upload and download failures.
+    #[must_use]
+    pub fn retry_options(mut self, retry: RetryOptions) -> Self {
+        self.retry = retry;
+        self
+    }
+
     /// Builds the client.
     ///
     /// # Errors
@@ -213,6 +222,7 @@ impl InternetArchiveClientBuilder {
             auth: self.auth,
             endpoint: self.endpoint,
             poll: self.poll,
+            retry: self.retry,
             request_timeout: self.request_timeout,
             connect_timeout: self.connect_timeout,
         })
@@ -227,6 +237,7 @@ pub struct InternetArchiveClient {
     pub(crate) auth: Option<Auth>,
     pub(crate) endpoint: Endpoint,
     pub(crate) poll: PollOptions,
+    pub(crate) retry: RetryOptions,
     pub(crate) request_timeout: Option<Duration>,
     pub(crate) connect_timeout: Option<Duration>,
 }
@@ -239,6 +250,7 @@ impl InternetArchiveClient {
             auth: None,
             endpoint: Endpoint::default(),
             poll: PollOptions::default(),
+            retry: RetryOptions::default(),
             user_agent: None,
             request_timeout: None,
             connect_timeout: None,
@@ -283,6 +295,12 @@ impl InternetArchiveClient {
     #[must_use]
     pub fn poll_options(&self) -> &PollOptions {
         &self.poll
+    }
+
+    /// Returns the configured upload and download retry options.
+    #[must_use]
+    pub fn retry_options(&self) -> &RetryOptions {
+        &self.retry
     }
 
     /// Returns the request timeout.
@@ -943,11 +961,14 @@ impl InternetArchiveClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<bytes::Bytes, InternetArchiveError> {
-        let response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(InternetArchiveError::from_response(response).await);
-        }
-        response.bytes().await.map_err(Into::into)
+        self.with_transfer_retry(|| async {
+            let response = clone_request(&request)?.send().await?;
+            if !response.status().is_success() {
+                return Err(InternetArchiveError::from_response(response).await);
+            }
+            response.bytes().await.map_err(Into::into)
+        })
+        .await
     }
 
     #[cfg(feature = "indicatif")]
@@ -956,29 +977,32 @@ impl InternetArchiveClient {
         request: reqwest::RequestBuilder,
         progress: &ProgressBar,
     ) -> Result<bytes::Bytes, InternetArchiveError> {
-        progress.set_position(0);
+        self.with_transfer_retry(|| async {
+            progress.set_position(0);
 
-        let mut response = request.send().await?;
-        if !response.status().is_success() {
-            return Err(InternetArchiveError::from_response(response).await);
-        }
+            let mut response = clone_request(&request)?.send().await?;
+            if !response.status().is_success() {
+                return Err(InternetArchiveError::from_response(response).await);
+            }
 
-        if let Some(length) = response.content_length() {
-            progress.set_length(length);
-        }
+            if let Some(length) = response.content_length() {
+                progress.set_length(length);
+            }
 
-        let mut bytes = response
-            .content_length()
-            .and_then(|length| usize::try_from(length).ok())
-            .map_or_else(Vec::new, Vec::with_capacity);
+            let mut bytes = response
+                .content_length()
+                .and_then(|length| usize::try_from(length).ok())
+                .map_or_else(Vec::new, Vec::with_capacity);
 
-        while let Some(chunk) = response.chunk().await? {
-            progress.inc(chunk.len() as u64);
-            bytes.extend_from_slice(&chunk);
-        }
+            while let Some(chunk) = response.chunk().await? {
+                progress.inc(chunk.len() as u64);
+                bytes.extend_from_slice(&chunk);
+            }
 
-        progress.finish();
-        Ok(bytes::Bytes::from(bytes))
+            progress.finish();
+            Ok(bytes::Bytes::from(bytes))
+        })
+        .await
     }
 
     async fn execute_metadata_write(
@@ -1006,13 +1030,21 @@ impl InternetArchiveClient {
         let mut remaining_redirects = 8_u8;
 
         loop {
-            let mut request =
-                self.s3_request(method.clone(), current_url.clone(), headers.clone())?;
-            if let Some(body) = &body {
-                request = body.apply(request).await?;
-            }
+            let response = self
+                .with_transfer_retry(|| async {
+                    let mut request =
+                        self.s3_request(method.clone(), current_url.clone(), headers.clone())?;
+                    if let Some(body) = &body {
+                        request = body.apply(request).await?;
+                    }
+                    let response = request.send().await?;
+                    if is_retryable_status(response.status()) {
+                        return Err(InternetArchiveError::from_response(response).await);
+                    }
+                    Ok(response)
+                })
+                .await?;
 
-            let response = request.send().await?;
             if is_redirect(response.status()) {
                 let Some(location) = response.headers().get(LOCATION).cloned() else {
                     return Err(InternetArchiveError::InvalidState(
@@ -1063,13 +1095,21 @@ impl InternetArchiveClient {
         let mut remaining_redirects = 8_u8;
 
         loop {
-            let mut request =
-                self.s3_request(method.clone(), current_url.clone(), headers.clone())?;
-            if let Some(body) = &body {
-                request = body.apply_with_progress(request, progress).await?;
-            }
+            let response = self
+                .with_transfer_retry(|| async {
+                    let mut request =
+                        self.s3_request(method.clone(), current_url.clone(), headers.clone())?;
+                    if let Some(body) = &body {
+                        request = body.apply_with_progress(request, progress).await?;
+                    }
+                    let response = request.send().await?;
+                    if is_retryable_status(response.status()) {
+                        return Err(InternetArchiveError::from_response(response).await);
+                    }
+                    Ok(response)
+                })
+                .await?;
 
-            let response = request.send().await?;
             if is_redirect(response.status()) {
                 let Some(location) = response.headers().get(LOCATION).cloned() else {
                     return Err(InternetArchiveError::InvalidState(
@@ -1135,6 +1175,38 @@ impl InternetArchiveClient {
 
             if started.elapsed() >= self.poll.max_wait {
                 return Err(InternetArchiveError::Timeout(label));
+            }
+        }
+    }
+
+    /// Runs a transfer operation, retrying it on transient failures.
+    ///
+    /// The operation is re-run when it returns a transient transport error or a
+    /// retryable HTTP status (see [`RetryOptions`]), backing off exponentially
+    /// up to [`RetryOptions::max_backoff`] for at most
+    /// [`RetryOptions::max_retries`] retries. Any other outcome, success or a
+    /// non-retryable error, is returned immediately.
+    async fn with_transfer_retry<T, F, Fut>(
+        &self,
+        mut operation: F,
+    ) -> Result<T, InternetArchiveError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T, InternetArchiveError>>,
+    {
+        let mut attempts = 0_u32;
+        let mut delay = self.retry.initial_backoff;
+
+        loop {
+            match operation().await {
+                Err(error)
+                    if attempts < self.retry.max_retries && is_retryable_transfer_error(&error) =>
+                {
+                    attempts += 1;
+                    tokio::time::sleep(delay).await;
+                    delay = std::cmp::min(delay.saturating_mul(2), self.retry.max_backoff);
+                }
+                other => return other,
             }
         }
     }
@@ -1267,6 +1339,14 @@ impl Stream for ChunkedBytesStream {
     }
 }
 
+fn clone_request(
+    request: &reqwest::RequestBuilder,
+) -> Result<reqwest::RequestBuilder, InternetArchiveError> {
+    request.try_clone().ok_or_else(|| {
+        InternetArchiveError::InvalidState("request body cannot be retried".to_owned())
+    })
+}
+
 fn is_redirect(status: StatusCode) -> bool {
     matches!(
         status,
@@ -1381,6 +1461,26 @@ mod tests {
     use crate::upload::{DeleteOptions, UploadOptions, UploadSpec};
     use crate::{Endpoint, IdentifierError, ItemIdentifier, PollOptions};
     use reqwest::header::LOCATION;
+
+    #[tokio::test]
+    async fn clone_request_rejects_streaming_bodies() {
+        super::ensure_rustls_provider();
+        let client = reqwest::Client::new();
+
+        let streaming = client
+            .post("http://example.com/")
+            .body(reqwest::Body::wrap_stream(
+                tokio_util::io::ReaderStream::new(tokio::io::empty()),
+            ));
+        match super::clone_request(&streaming) {
+            Err(InternetArchiveError::InvalidState(message)) => {
+                assert!(message.contains("cannot be retried"));
+            }
+            other => panic!("expected invalid state error, got {other:?}"),
+        }
+
+        assert!(super::clone_request(&client.get("http://example.com/")).is_ok());
+    }
 
     #[derive(Default)]
     struct StateData {
