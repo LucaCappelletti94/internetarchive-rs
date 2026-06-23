@@ -1,4 +1,5 @@
 #![allow(
+    dead_code,
     missing_docs,
     clippy::expect_used,
     clippy::missing_panics_doc,
@@ -17,7 +18,9 @@ use axum::http::{HeaderMap, Method, Request, Response, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::any;
 use axum::Router;
-use internetarchive_rs::{Auth, Endpoint, InternetArchiveClient, PollOptions};
+use internetarchive_rs::{
+    Auth, Endpoint, InternetArchiveClient, InternetArchiveClientBuilder, PollOptions, RetryOptions,
+};
 use tokio::net::TcpListener;
 use tokio::task::JoinHandle;
 use url::Url;
@@ -36,6 +39,7 @@ pub struct QueuedResponse {
     status: StatusCode,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
+    delay: Duration,
 }
 
 impl QueuedResponse {
@@ -44,6 +48,7 @@ impl QueuedResponse {
             status,
             headers: vec![("content-type".into(), "application/json".into())],
             body: serde_json::to_vec(&body).expect("json serialization"),
+            delay: Duration::ZERO,
         }
     }
 
@@ -52,6 +57,7 @@ impl QueuedResponse {
             status,
             headers: vec![("content-type".into(), "text/plain".into())],
             body: body.into().into_bytes(),
+            delay: Duration::ZERO,
         }
     }
 
@@ -60,7 +66,15 @@ impl QueuedResponse {
             status,
             headers,
             body,
+            delay: Duration::ZERO,
         }
+    }
+
+    /// Delays this response before it is sent, to exercise client timeouts.
+    #[must_use]
+    pub fn with_delay(mut self, delay: Duration) -> Self {
+        self.delay = delay;
+        self
     }
 }
 
@@ -99,7 +113,10 @@ impl MockInternetArchiveServer {
         }
     }
 
-    pub fn client(&self) -> InternetArchiveClient {
+    /// Returns a builder pointed at this mock server. Retries are disabled by
+    /// default so error-path tests observe a single attempt. Retry tests call
+    /// [`InternetArchiveClientBuilder::retry_options`] to opt in.
+    pub fn client_builder(&self) -> InternetArchiveClientBuilder {
         InternetArchiveClient::builder()
             .auth(Auth::new("access", "secret"))
             .endpoint(Endpoint::custom(
@@ -111,8 +128,15 @@ impl MockInternetArchiveServer {
                 initial_delay: Duration::from_millis(5),
                 max_delay: Duration::from_millis(10),
             })
-            .build()
-            .expect("build mock client")
+            .retry_options(RetryOptions {
+                max_retries: 0,
+                initial_backoff: Duration::from_millis(1),
+                max_backoff: Duration::from_millis(1),
+            })
+    }
+
+    pub fn client(&self) -> InternetArchiveClient {
+        self.client_builder().build().expect("build mock client")
     }
 
     pub fn enqueue(&self, method: Method, path: &str, response: QueuedResponse) {
@@ -172,7 +196,10 @@ async fn handle_request(
         .and_then(VecDeque::pop_front);
 
     match response {
-        Some(response) => build_response(response),
+        Some(response) => {
+            tokio::time::sleep(response.delay).await;
+            build_response(response)
+        }
         None => build_response(QueuedResponse::text(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!(

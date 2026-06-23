@@ -52,6 +52,7 @@ pub mod ids;
 pub mod metadata;
 pub mod model;
 pub mod poll;
+pub mod retry;
 pub mod search;
 mod serde_util;
 pub mod upload;
@@ -73,6 +74,7 @@ pub use model::{
     SearchResponseHeader, SearchResultPage, TaskSubmission,
 };
 pub use poll::PollOptions;
+pub use retry::RetryOptions;
 pub use search::{SearchQuery, SearchQueryBuilder, SearchSort, SortDirection};
 pub use upload::{DeleteOptions, FileConflictPolicy, UploadOptions, UploadSource, UploadSpec};
 pub use workflow::{PublishOutcome, PublishRequest};
