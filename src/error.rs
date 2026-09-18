@@ -8,7 +8,11 @@ use thiserror::Error;
 use crate::ids::IdentifierError;
 
 /// Errors produced by the Internet Archive client.
+///
+/// Archive-side failure modes are outside this crate's control, so new variants
+/// arrive without a breaking release.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum InternetArchiveError {
     /// The service returned a non-success HTTP response.
     #[error("Internet Archive returned HTTP {status}: {message:?}")]
