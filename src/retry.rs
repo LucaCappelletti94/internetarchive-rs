@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use reqwest::StatusCode;
+use crate::error::HttpStatus;
 
 use crate::error::InternetArchiveError;
 
@@ -44,15 +44,8 @@ impl Default for RetryOptions {
 /// returns when throttling. Permanent server errors such as `501 Not
 /// Implemented` are not retried, since retrying them only wastes the backoff
 /// budget before surfacing the same failure.
-pub(crate) fn is_retryable_status(status: StatusCode) -> bool {
-    matches!(
-        status,
-        StatusCode::TOO_MANY_REQUESTS
-            | StatusCode::INTERNAL_SERVER_ERROR
-            | StatusCode::BAD_GATEWAY
-            | StatusCode::SERVICE_UNAVAILABLE
-            | StatusCode::GATEWAY_TIMEOUT
-    )
+pub(crate) fn is_retryable_status(status: HttpStatus) -> bool {
+    matches!(status.as_u16(), 429 | 500 | 502 | 503 | 504)
 }
 
 /// Returns whether a transfer error is transient and worth retrying.
@@ -68,6 +61,7 @@ pub(crate) fn is_retryable_transfer_error(error: &InternetArchiveError) -> bool 
 
 #[cfg(test)]
 mod tests {
+    use super::HttpStatus;
     use super::{is_retryable_status, is_retryable_transfer_error, RetryOptions};
     use crate::error::InternetArchiveError;
     use reqwest::StatusCode;
@@ -83,20 +77,36 @@ mod tests {
 
     #[test]
     fn retryable_statuses_cover_throttling_and_server_errors() {
-        assert!(is_retryable_status(StatusCode::TOO_MANY_REQUESTS));
-        assert!(is_retryable_status(StatusCode::SERVICE_UNAVAILABLE));
-        assert!(is_retryable_status(StatusCode::INTERNAL_SERVER_ERROR));
-        assert!(is_retryable_status(StatusCode::BAD_GATEWAY));
-        assert!(is_retryable_status(StatusCode::GATEWAY_TIMEOUT));
-        assert!(!is_retryable_status(StatusCode::NOT_IMPLEMENTED));
-        assert!(!is_retryable_status(StatusCode::NOT_FOUND));
-        assert!(!is_retryable_status(StatusCode::OK));
+        assert!(is_retryable_status(HttpStatus::from(
+            StatusCode::TOO_MANY_REQUESTS.as_u16()
+        )));
+        assert!(is_retryable_status(HttpStatus::from(
+            StatusCode::SERVICE_UNAVAILABLE.as_u16()
+        )));
+        assert!(is_retryable_status(HttpStatus::from(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+        )));
+        assert!(is_retryable_status(HttpStatus::from(
+            StatusCode::BAD_GATEWAY.as_u16()
+        )));
+        assert!(is_retryable_status(HttpStatus::from(
+            StatusCode::GATEWAY_TIMEOUT.as_u16()
+        )));
+        assert!(!is_retryable_status(HttpStatus::from(
+            StatusCode::NOT_IMPLEMENTED.as_u16()
+        )));
+        assert!(!is_retryable_status(HttpStatus::from(
+            StatusCode::NOT_FOUND.as_u16()
+        )));
+        assert!(!is_retryable_status(HttpStatus::from(
+            StatusCode::OK.as_u16()
+        )));
     }
 
     #[test]
     fn transfer_error_classification_matches_http_status() {
         let throttled = InternetArchiveError::Http {
-            status: StatusCode::SERVICE_UNAVAILABLE,
+            status: HttpStatus::from(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
             code: Some("SlowDown".to_owned()),
             message: None,
             raw_body: None,
@@ -104,7 +114,7 @@ mod tests {
         assert!(is_retryable_transfer_error(&throttled));
 
         let missing = InternetArchiveError::Http {
-            status: StatusCode::NOT_FOUND,
+            status: HttpStatus::from(StatusCode::NOT_FOUND.as_u16()),
             code: None,
             message: None,
             raw_body: None,

@@ -486,7 +486,7 @@ async fn make_dark_reports_http_failure_when_caller_lacks_permission() {
         InternetArchiveError::Http {
             status, message, ..
         } => {
-            assert_eq!(status, StatusCode::UNAUTHORIZED);
+            assert_eq!(status, StatusCode::UNAUTHORIZED.as_u16());
             assert_eq!(message.as_deref(), Some("Unauthorized to edit item"));
         }
         other => panic!("unexpected error variant: {other:?}"),
@@ -595,7 +595,7 @@ async fn dark_with_retries_returns_last_error_after_exhausting_attempts() {
     .unwrap_err();
     match error {
         InternetArchiveError::Http { status, .. } => {
-            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+            assert_eq!(status, StatusCode::TOO_MANY_REQUESTS.as_u16());
         }
         other => panic!("unexpected error variant: {other:?}"),
     }

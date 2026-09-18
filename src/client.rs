@@ -25,7 +25,8 @@ use url::Url;
 use crate::downloads::ResolvedDownload;
 use crate::endpoint::Endpoint;
 use crate::error::{
-    decode_metadata_write_failure, InternetArchiveError, JsonError, TransportError, UrlError,
+    decode_metadata_write_failure, HttpStatus, InternetArchiveError, JsonError, TransportError,
+    UrlError,
 };
 use crate::ids::SecretPair;
 use crate::metadata::{
@@ -1071,7 +1072,7 @@ impl InternetArchiveClient {
                         request = body.apply(request).await?;
                     }
                     let response = request.send().await.map_err(TransportError::new)?;
-                    if is_retryable_status(response.status()) {
+                    if is_retryable_status(HttpStatus::from(response.status().as_u16())) {
                         return Err(InternetArchiveError::from_response(response).await);
                     }
                     Ok(response)
@@ -1136,7 +1137,7 @@ impl InternetArchiveClient {
                         request = body.apply_with_progress(request, progress).await?;
                     }
                     let response = request.send().await.map_err(TransportError::new)?;
-                    if is_retryable_status(response.status()) {
+                    if is_retryable_status(HttpStatus::from(response.status().as_u16())) {
                         return Err(InternetArchiveError::from_response(response).await);
                     }
                     Ok(response)
@@ -1525,6 +1526,7 @@ mod tests {
     use std::task::{Context, Poll, Waker};
     use std::time::Duration;
 
+    use crate::error::HttpStatus;
     use axum::extract::State;
     use axum::http::{HeaderMap, HeaderValue, StatusCode, Uri};
     use axum::routing::{get, put};
@@ -2052,7 +2054,7 @@ mod tests {
                     async move {
                         if transient_attempts < 3 {
                             Err(InternetArchiveError::Http {
-                                status: StatusCode::BAD_GATEWAY,
+                                status: HttpStatus::from(StatusCode::BAD_GATEWAY.as_u16()),
                                 code: None,
                                 message: Some("temporary outage".to_owned()),
                                 raw_body: None,
@@ -2271,13 +2273,13 @@ mod tests {
             auth.search(&SearchQuery::identifier("demo-item"))
                 .await
                 .unwrap_err(),
-            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY
+            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY.as_u16()
         ));
         assert!(matches!(
             auth.download_bytes(&identifier, "missing.txt")
                 .await
                 .unwrap_err(),
-            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY
+            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY.as_u16()
         ));
         assert!(matches!(
             auth.apply_metadata_patch(
@@ -2287,7 +2289,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_REQUEST
+            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_REQUEST.as_u16()
         ));
         assert!(matches!(
             auth.upload_file(
@@ -2307,7 +2309,7 @@ mod tests {
             )
             .await
             .unwrap_err(),
-            InternetArchiveError::Http { status, .. } if status == StatusCode::INTERNAL_SERVER_ERROR
+            InternetArchiveError::Http { status, .. } if status == StatusCode::INTERNAL_SERVER_ERROR.as_u16()
         ));
 
         server.abort();
@@ -2568,7 +2570,7 @@ mod tests {
                 )
                 .await
                 .unwrap_err(),
-            InternetArchiveError::Http { status, .. } if status == StatusCode::INTERNAL_SERVER_ERROR
+            InternetArchiveError::Http { status, .. } if status == StatusCode::INTERNAL_SERVER_ERROR.as_u16()
         ));
 
         server.abort();
@@ -2676,7 +2678,7 @@ mod tests {
                 .download_bytes_with_progress(&ItemIdentifier::new("demo-item").unwrap(), "missing.txt", &progress)
                 .await
                 .unwrap_err(),
-            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY
+            InternetArchiveError::Http { status, .. } if status == StatusCode::BAD_GATEWAY.as_u16()
         ));
 
         server.abort();

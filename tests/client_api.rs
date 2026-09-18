@@ -640,7 +640,7 @@ async fn workflow_lookup_errors_are_propagated() {
     assert!(matches!(
         publish_error,
         internetarchive_rs::InternetArchiveError::Http { status, .. }
-            if status == StatusCode::BAD_GATEWAY
+            if status == StatusCode::BAD_GATEWAY.as_u16()
     ));
 
     server.enqueue(
@@ -659,7 +659,7 @@ async fn workflow_lookup_errors_are_propagated() {
     assert!(matches!(
         upsert_error,
         internetarchive_rs::InternetArchiveError::Http { status, .. }
-            if status == StatusCode::BAD_GATEWAY
+            if status == StatusCode::BAD_GATEWAY.as_u16()
     ));
 }
 

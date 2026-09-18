@@ -1,6 +1,6 @@
 //! Error types and response decoding.
 
-use reqwest::{Response, StatusCode};
+use reqwest::Response;
 use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
@@ -18,7 +18,7 @@ pub enum InternetArchiveError {
     #[error("Internet Archive returned HTTP {status}: {message:?}")]
     Http {
         /// HTTP status code.
-        status: StatusCode,
+        status: HttpStatus,
         /// Machine-friendly code when available.
         code: Option<String>,
         /// Human-readable summary when available.
@@ -87,6 +87,42 @@ pub enum InternetArchiveError {
     Identifier(#[from] IdentifierError),
 }
 
+/// HTTP status returned by the Archive, owned so the HTTP crate's type stays private.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HttpStatus(u16);
+
+impl HttpStatus {
+    /// Returns the status as its numeric code.
+    #[must_use]
+    pub const fn as_u16(self) -> u16 {
+        self.0
+    }
+
+    /// Returns whether the status is in the server-error range.
+    #[must_use]
+    pub const fn is_server_error(self) -> bool {
+        self.0 >= 500 && self.0 < 600
+    }
+}
+
+impl From<u16> for HttpStatus {
+    fn from(code: u16) -> Self {
+        Self(code)
+    }
+}
+
+impl PartialEq<u16> for HttpStatus {
+    fn eq(&self, other: &u16) -> bool {
+        self.0 == *other
+    }
+}
+
+impl std::fmt::Display for HttpStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}", self.0)
+    }
+}
+
 /// Transport failure, wrapping the HTTP client's error so its type stays private.
 #[derive(Debug, Error)]
 #[error(transparent)]
@@ -140,7 +176,7 @@ impl UrlError {
 
 impl InternetArchiveError {
     pub(crate) async fn from_response(response: Response) -> Self {
-        let status = response.status();
+        let status = HttpStatus::from(response.status().as_u16());
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
@@ -177,7 +213,7 @@ struct XmlError {
 }
 
 pub(crate) fn decode_http_error(
-    status: StatusCode,
+    status: HttpStatus,
     content_type: Option<&str>,
     body: &[u8],
 ) -> InternetArchiveError {
@@ -282,7 +318,9 @@ fn trimmed_body(body: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_http_error, decode_metadata_write_failure, InternetArchiveError};
+    use super::{
+        decode_http_error, decode_metadata_write_failure, HttpStatus, InternetArchiveError,
+    };
     use axum::http::StatusCode as AxumStatusCode;
     use axum::routing::get;
     use axum::{Json, Router};
@@ -293,7 +331,7 @@ mod tests {
     #[test]
     fn decodes_json_http_errors() {
         let error = decode_http_error(
-            StatusCode::BAD_REQUEST,
+            HttpStatus::from(StatusCode::BAD_REQUEST.as_u16()),
             Some("application/json"),
             br#"{"error":"no changes made"}"#,
         );
@@ -309,7 +347,7 @@ mod tests {
     #[test]
     fn decodes_xml_http_errors() {
         let error = decode_http_error(
-            StatusCode::SERVICE_UNAVAILABLE,
+            HttpStatus::from(StatusCode::SERVICE_UNAVAILABLE.as_u16()),
             Some("application/xml"),
             br"<Error><Code>SlowDown</Code><Message>Too many requests</Message></Error>",
         );
@@ -325,7 +363,11 @@ mod tests {
 
     #[test]
     fn decodes_plain_text_http_errors() {
-        let error = decode_http_error(StatusCode::BAD_GATEWAY, Some("text/plain"), b"gateway down");
+        let error = decode_http_error(
+            HttpStatus::from(StatusCode::BAD_GATEWAY.as_u16()),
+            Some("text/plain"),
+            b"gateway down",
+        );
         match error {
             InternetArchiveError::Http { message, .. } => {
                 assert_eq!(message.as_deref(), Some("gateway down"));
@@ -353,7 +395,7 @@ mod tests {
     #[test]
     fn decodes_json_fallback_value_errors_and_body_heuristics() {
         let error = decode_http_error(
-            StatusCode::BAD_REQUEST,
+            HttpStatus::from(StatusCode::BAD_REQUEST.as_u16()),
             None,
             br#"  {"error":{"nested":true},"title":"fallback title","code":"bad_request"}"#,
         );
@@ -376,7 +418,7 @@ mod tests {
     #[test]
     fn decodes_xml_without_content_type_and_trims_text_bodies() {
         let error = decode_http_error(
-            StatusCode::BAD_GATEWAY,
+            HttpStatus::from(StatusCode::BAD_GATEWAY.as_u16()),
             None,
             b"\n   <Error><Message>temporary outage</Message></Error>",
         );
@@ -390,7 +432,7 @@ mod tests {
 
         let long_text = format!("\n\n{}", "x".repeat(600));
         let trimmed = decode_http_error(
-            StatusCode::BAD_GATEWAY,
+            HttpStatus::from(StatusCode::BAD_GATEWAY.as_u16()),
             Some("text/plain"),
             long_text.as_bytes(),
         );
@@ -416,7 +458,11 @@ mod tests {
 
     #[test]
     fn empty_plaintext_body_produces_no_message() {
-        let error = decode_http_error(StatusCode::BAD_GATEWAY, Some("text/plain"), b"\n \n\t");
+        let error = decode_http_error(
+            HttpStatus::from(StatusCode::BAD_GATEWAY.as_u16()),
+            Some("text/plain"),
+            b"\n \n\t",
+        );
         match error {
             InternetArchiveError::Http {
                 message, raw_body, ..
