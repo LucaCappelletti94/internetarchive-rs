@@ -117,6 +117,12 @@ impl PartialEq<u16> for HttpStatus {
     }
 }
 
+impl PartialEq<HttpStatus> for u16 {
+    fn eq(&self, other: &HttpStatus) -> bool {
+        *self == other.0
+    }
+}
+
 impl std::fmt::Display for HttpStatus {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "{}", self.0)
@@ -143,6 +149,15 @@ impl TransportError {
     #[must_use]
     pub fn is_connect(&self) -> bool {
         self.0.is_connect()
+    }
+
+    /// Returns whether the host could not be resolved.
+    ///
+    /// A resolution failure also reports as a connection failure, so this
+    /// separates the two causes rather than widening what is retried.
+    #[must_use]
+    pub fn is_dns(&self) -> bool {
+        self.0.is_dns()
     }
 
     /// Returns whether the failure happened while streaming a body.
