@@ -63,16 +63,16 @@ pub enum InternetArchiveError {
     Timeout(&'static str),
     /// Request transport failed.
     #[error(transparent)]
-    Transport(#[from] reqwest::Error),
+    Transport(#[from] TransportError),
     /// JSON encoding or decoding failed.
     #[error(transparent)]
-    Json(#[from] serde_json::Error),
+    Json(#[from] JsonError),
     /// Local I/O failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),
     /// URL construction failed.
     #[error(transparent)]
-    Url(#[from] url::ParseError),
+    Url(#[from] UrlError),
     /// Environment lookup failed.
     #[error("failed to read environment variable {name}: {source}")]
     EnvVar {
@@ -87,6 +87,57 @@ pub enum InternetArchiveError {
     Identifier(#[from] IdentifierError),
 }
 
+/// Transport failure, wrapping the HTTP client's error so its type stays private.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct TransportError(reqwest::Error);
+
+impl TransportError {
+    pub(crate) fn new(source: reqwest::Error) -> Self {
+        Self(source)
+    }
+
+    /// Returns whether the request timed out.
+    #[must_use]
+    pub fn is_timeout(&self) -> bool {
+        self.0.is_timeout()
+    }
+
+    /// Returns whether the connection could not be established.
+    #[must_use]
+    pub fn is_connect(&self) -> bool {
+        self.0.is_connect()
+    }
+
+    /// Returns whether the failure happened while streaming a body.
+    #[must_use]
+    pub fn is_body(&self) -> bool {
+        self.0.is_body()
+    }
+}
+
+/// JSON encoding or decoding failure, wrapping the serializer's error so its type stays private.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct JsonError(serde_json::Error);
+
+impl JsonError {
+    pub(crate) fn new(source: serde_json::Error) -> Self {
+        Self(source)
+    }
+}
+
+/// URL construction failure, wrapping the parser's error so its type stays private.
+#[derive(Debug, Error)]
+#[error(transparent)]
+pub struct UrlError(url::ParseError);
+
+impl UrlError {
+    pub(crate) fn new(source: url::ParseError) -> Self {
+        Self(source)
+    }
+}
+
 impl InternetArchiveError {
     pub(crate) async fn from_response(response: Response) -> Self {
         let status = response.status();
@@ -98,7 +149,7 @@ impl InternetArchiveError {
 
         let body = match response.bytes().await {
             Ok(bytes) => bytes,
-            Err(error) => return Self::Transport(error),
+            Err(error) => return Self::Transport(TransportError::new(error)),
         };
 
         decode_http_error(status, content_type.as_deref(), &body)
@@ -181,7 +232,7 @@ pub(crate) fn decode_http_error(
 }
 
 pub(crate) fn decode_metadata_write_failure(body: &[u8]) -> Result<(), InternetArchiveError> {
-    let parsed: MdapiError = serde_json::from_slice(body)?;
+    let parsed: MdapiError = serde_json::from_slice(body).map_err(JsonError::new)?;
     match parsed.success {
         Some(true) => Ok(()),
         _ => Err(InternetArchiveError::MetadataWriteFailed {
