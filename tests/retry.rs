@@ -86,7 +86,7 @@ async fn upload_gives_up_after_exhausting_retries() {
 
     match error {
         InternetArchiveError::Http { status, .. } => {
-            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE.as_u16());
         }
         other => panic!("unexpected error: {other:?}"),
     }
@@ -140,7 +140,9 @@ async fn download_does_not_retry_client_errors() {
         .unwrap_err();
 
     match error {
-        InternetArchiveError::Http { status, .. } => assert_eq!(status, StatusCode::NOT_FOUND),
+        InternetArchiveError::Http { status, .. } => {
+            assert_eq!(status, StatusCode::NOT_FOUND.as_u16())
+        }
         other => panic!("unexpected error: {other:?}"),
     }
     assert_eq!(
