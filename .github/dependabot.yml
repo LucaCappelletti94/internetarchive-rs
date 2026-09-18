@@ -17,6 +17,7 @@ updates:
       interval: weekly
     open-pull-requests-limit: 10
     ignore:
-      # The reference selects the Rust toolchain rather than the action version,
-      # so Dependabot reads 1.85.0 as a release and offers a nonexistent 1.120.0.
+      # Each reference is a branch head pinned by digest, where the branch selects the
+      # action variant. The only tag is v1, so an offer would swap the variant, and
+      # these pins are refreshed by hand instead.
       - dependency-name: dtolnay/rust-toolchain
