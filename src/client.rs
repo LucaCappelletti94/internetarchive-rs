@@ -1558,7 +1558,7 @@ mod tests {
         let client = reqwest::Client::new();
 
         let streaming = client
-            .post("http://example.com/")
+            .post("https://example.com/")
             .body(reqwest::Body::wrap_stream(
                 tokio_util::io::ReaderStream::new(tokio::io::empty()),
             ));
@@ -1569,7 +1569,7 @@ mod tests {
             other => panic!("expected invalid state error, got {other:?}"),
         }
 
-        assert!(super::clone_request(&client.get("http://example.com/")).is_ok());
+        assert!(super::clone_request(&client.get("https://example.com/")).is_ok());
     }
 
     #[derive(Default)]
@@ -2511,7 +2511,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert(
                 LOCATION,
-                HeaderValue::from_static("http://example.com/stolen/demo-item/foreign.bin"),
+                HeaderValue::from_static("https://example.com/stolen/demo-item/foreign.bin"),
             );
             (StatusCode::TEMPORARY_REDIRECT, headers)
         }
@@ -2692,7 +2692,7 @@ mod tests {
 
         let bytes_progress = ProgressBar::hidden();
         let _bytes_request = ReplayableBody::Bytes(b"hello".to_vec())
-            .apply_with_progress(client.put("http://example.com/bytes"), &bytes_progress)
+            .apply_with_progress(client.put("https://example.com/bytes"), &bytes_progress)
             .await
             .unwrap();
         assert_eq!(bytes_progress.length(), Some(5));
@@ -2704,7 +2704,7 @@ mod tests {
 
         let path_progress = ProgressBar::hidden();
         let _path_request = ReplayableBody::Path { path, length: 5 }
-            .apply_with_progress(client.put("http://example.com/path"), &path_progress)
+            .apply_with_progress(client.put("https://example.com/path"), &path_progress)
             .await
             .unwrap();
         assert_eq!(path_progress.length(), Some(5));
