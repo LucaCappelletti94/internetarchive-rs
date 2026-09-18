@@ -290,7 +290,7 @@ async fn transport_errors_stay_classifiable_by_consumers() {
 /// connection predicate, so a resolution failure must keep reporting as both.
 #[tokio::test]
 async fn dns_failures_report_as_resolution_and_connection_failures() {
-    let unresolvable = Url::parse("http://does-not-resolve-9f3a2b7c.invalid/").expect("valid url");
+    let unresolvable = Url::parse("https://does-not-resolve-9f3a2b7c.invalid/").expect("valid url");
     let client = InternetArchiveClient::builder()
         .endpoint(Endpoint::custom(unresolvable.clone(), unresolvable))
         .retry_options(RetryOptions {
