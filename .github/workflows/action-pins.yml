@@ -1,0 +1,29 @@
+name: Action Pins
+
+on:
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  toolchain-pins:
+    name: Toolchain Pins
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # A digest pinned to a branch head goes stale silently, and Dependabot cannot
+      # offer these without swapping the variant a job depends on.
+      - name: Compare the toolchain pins against their branch heads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./scripts/refresh-action-pins.sh --check
