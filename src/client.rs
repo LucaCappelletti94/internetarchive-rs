@@ -24,7 +24,9 @@ use url::Url;
 
 use crate::downloads::ResolvedDownload;
 use crate::endpoint::Endpoint;
-use crate::error::{decode_metadata_write_failure, InternetArchiveError};
+use crate::error::{
+    decode_metadata_write_failure, InternetArchiveError, JsonError, TransportError, UrlError,
+};
 use crate::ids::SecretPair;
 use crate::metadata::{
     merge_metadata_semantically, metadata_contains_projection, HeaderEncoding, ItemMetadata,
@@ -213,7 +215,9 @@ impl InternetArchiveClientBuilder {
                 if !redirects_enabled {
                     builder = builder.redirect(reqwest::redirect::Policy::none());
                 }
-                builder.build().map_err(Into::into)
+                builder
+                    .build()
+                    .map_err(|error| TransportError::new(error).into())
             };
 
         Ok(InternetArchiveClient {
@@ -344,7 +348,7 @@ impl InternetArchiveClient {
             });
         }
 
-        let item: Item = serde_json::from_slice(&bytes)?;
+        let item: Item = serde_json::from_slice(&bytes).map_err(JsonError::new)?;
         if item.identifier().as_ref() != Some(identifier) {
             return Err(InternetArchiveError::ItemNotFound {
                 identifier: identifier.to_string(),
@@ -382,12 +386,13 @@ impl InternetArchiveClient {
             .archive_request(Method::GET, url)
             .header(ACCEPT, "application/json")
             .send()
-            .await?;
+            .await
+            .map_err(TransportError::new)?;
         if !response.status().is_success() {
             return Err(InternetArchiveError::from_response(response).await);
         }
 
-        let bytes = response.bytes().await?;
+        let bytes = response.bytes().await.map_err(TransportError::new)?;
         decode_search_response(&bytes)
     }
 
@@ -428,7 +433,7 @@ impl InternetArchiveClient {
             return Err(InternetArchiveError::MissingAuth);
         }
         let url = self.endpoint.metadata_url(identifier.as_str())?;
-        let patch = serde_json::to_string(patch)?;
+        let patch = serde_json::to_string(patch).map_err(JsonError::new)?;
         self.execute_metadata_write(
             self.archive_request(Method::POST, url)
                 .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -452,7 +457,7 @@ impl InternetArchiveClient {
             return Err(InternetArchiveError::MissingAuth);
         }
         let url = self.endpoint.metadata_url(identifier.as_str())?;
-        let payload = serde_json::to_string(changes)?;
+        let payload = serde_json::to_string(changes).map_err(JsonError::new)?;
         self.execute_metadata_write(
             self.archive_request(Method::POST, url)
                 .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
@@ -483,12 +488,14 @@ impl InternetArchiveClient {
         metadata: &ItemMetadata,
     ) -> Result<MetadataWriteResponse, InternetArchiveError> {
         let current = self.get_item(identifier).await?;
-        let current_value = serde_json::to_value(&current.metadata)?;
+        let current_value = serde_json::to_value(&current.metadata).map_err(JsonError::new)?;
         let desired_value =
-            serde_json::to_value(merge_metadata_semantically(&current.metadata, metadata))?;
+            serde_json::to_value(merge_metadata_semantically(&current.metadata, metadata))
+                .map_err(JsonError::new)?;
         let patch_value = json_patch::diff(&current_value, &desired_value);
         let patch: Vec<PatchOperation> =
-            serde_json::from_value(serde_json::to_value(patch_value)?)?;
+            serde_json::from_value(serde_json::to_value(patch_value).map_err(JsonError::new)?)
+                .map_err(JsonError::new)?;
 
         if patch.is_empty() {
             return Ok(MetadataWriteResponse {
@@ -690,13 +697,14 @@ impl InternetArchiveClient {
             .archive_request(Method::POST, url)
             .header(CONTENT_TYPE, "application/json")
             .header(ACCEPT, "application/json")
-            .body(serde_json::to_vec(&payload)?)
+            .body(serde_json::to_vec(&payload).map_err(JsonError::new)?)
             .send()
-            .await?;
+            .await
+            .map_err(TransportError::new)?;
         if !response.status().is_success() {
             return Err(InternetArchiveError::from_response(response).await);
         }
-        let bytes = response.bytes().await?;
+        let bytes = response.bytes().await.map_err(TransportError::new)?;
         decode_task_submission(&bytes)
     }
 
@@ -965,12 +973,12 @@ impl InternetArchiveClient {
     where
         T: serde::de::DeserializeOwned,
     {
-        let response = request.send().await?;
+        let response = request.send().await.map_err(TransportError::new)?;
         if !response.status().is_success() {
             return Err(InternetArchiveError::from_response(response).await);
         }
-        let bytes = response.bytes().await?;
-        Ok(serde_json::from_slice(&bytes)?)
+        let bytes = response.bytes().await.map_err(TransportError::new)?;
+        Ok(serde_json::from_slice(&bytes).map_err(JsonError::new)?)
     }
 
     async fn execute_bytes(
@@ -978,11 +986,17 @@ impl InternetArchiveClient {
         request: reqwest::RequestBuilder,
     ) -> Result<bytes::Bytes, InternetArchiveError> {
         self.with_transfer_retry(|| async {
-            let response = clone_request(&request)?.send().await?;
+            let response = clone_request(&request)?
+                .send()
+                .await
+                .map_err(TransportError::new)?;
             if !response.status().is_success() {
                 return Err(InternetArchiveError::from_response(response).await);
             }
-            response.bytes().await.map_err(Into::into)
+            response
+                .bytes()
+                .await
+                .map_err(|error| TransportError::new(error).into())
         })
         .await
     }
@@ -996,7 +1010,10 @@ impl InternetArchiveClient {
         self.with_transfer_retry(|| async {
             progress.set_position(0);
 
-            let mut response = clone_request(&request)?.send().await?;
+            let mut response = clone_request(&request)?
+                .send()
+                .await
+                .map_err(TransportError::new)?;
             if !response.status().is_success() {
                 return Err(InternetArchiveError::from_response(response).await);
             }
@@ -1010,7 +1027,7 @@ impl InternetArchiveClient {
                 .and_then(|length| usize::try_from(length).ok())
                 .map_or_else(Vec::new, Vec::with_capacity);
 
-            while let Some(chunk) = response.chunk().await? {
+            while let Some(chunk) = response.chunk().await.map_err(TransportError::new)? {
                 progress.inc(chunk.len() as u64);
                 bytes.extend_from_slice(&chunk);
             }
@@ -1025,14 +1042,14 @@ impl InternetArchiveClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<MetadataWriteResponse, InternetArchiveError> {
-        let response = request.send().await?;
+        let response = request.send().await.map_err(TransportError::new)?;
         if !response.status().is_success() {
             return Err(InternetArchiveError::from_response(response).await);
         }
 
-        let bytes = response.bytes().await?;
+        let bytes = response.bytes().await.map_err(TransportError::new)?;
         decode_metadata_write_failure(&bytes)?;
-        Ok(serde_json::from_slice(&bytes)?)
+        Ok(serde_json::from_slice(&bytes).map_err(JsonError::new)?)
     }
 
     async fn execute_s3(
@@ -1053,7 +1070,7 @@ impl InternetArchiveClient {
                     if let Some(body) = &body {
                         request = body.apply(request).await?;
                     }
-                    let response = request.send().await?;
+                    let response = request.send().await.map_err(TransportError::new)?;
                     if is_retryable_status(response.status()) {
                         return Err(InternetArchiveError::from_response(response).await);
                     }
@@ -1079,7 +1096,7 @@ impl InternetArchiveClient {
                         "redirect location is not valid UTF-8".to_owned(),
                     )
                 })?;
-                let redirected_url = current_url.join(location)?;
+                let redirected_url = current_url.join(location).map_err(UrlError::new)?;
                 if redirected_url.origin() != self.endpoint.s3_base().origin() {
                     return Err(InternetArchiveError::InvalidState(
                         "refusing to forward credentials to redirected S3 host".to_owned(),
@@ -1118,7 +1135,7 @@ impl InternetArchiveClient {
                     if let Some(body) = &body {
                         request = body.apply_with_progress(request, progress).await?;
                     }
-                    let response = request.send().await?;
+                    let response = request.send().await.map_err(TransportError::new)?;
                     if is_retryable_status(response.status()) {
                         return Err(InternetArchiveError::from_response(response).await);
                     }
@@ -1144,7 +1161,7 @@ impl InternetArchiveClient {
                         "redirect location is not valid UTF-8".to_owned(),
                     )
                 })?;
-                let redirected_url = current_url.join(location)?;
+                let redirected_url = current_url.join(location).map_err(UrlError::new)?;
                 if redirected_url.origin() != self.endpoint.s3_base().origin() {
                     return Err(InternetArchiveError::InvalidState(
                         "refusing to forward credentials to redirected S3 host".to_owned(),
@@ -1438,10 +1455,10 @@ fn is_retryable_wait_error(error: &InternetArchiveError) -> bool {
 }
 
 fn decode_search_response(bytes: &[u8]) -> Result<SearchResponse, InternetArchiveError> {
-    let value: Value = serde_json::from_slice(bytes)?;
+    let value: Value = serde_json::from_slice(bytes).map_err(JsonError::new)?;
 
     if value.get("response").is_some() {
-        return Ok(serde_json::from_value(value)?);
+        return Ok(serde_json::from_value(value).map_err(JsonError::new)?);
     }
 
     let message = value
@@ -1466,7 +1483,7 @@ fn decode_search_response(bytes: &[u8]) -> Result<SearchResponse, InternetArchiv
 }
 
 fn decode_task_submission(bytes: &[u8]) -> Result<TaskSubmission, InternetArchiveError> {
-    let value: Value = serde_json::from_slice(bytes)?;
+    let value: Value = serde_json::from_slice(bytes).map_err(JsonError::new)?;
 
     let success = value
         .get("success")
@@ -1475,7 +1492,7 @@ fn decode_task_submission(bytes: &[u8]) -> Result<TaskSubmission, InternetArchiv
 
     if success {
         if let Some(inner) = value.get("value").cloned() {
-            return Ok(serde_json::from_value(inner)?);
+            return Ok(serde_json::from_value(inner).map_err(JsonError::new)?);
         }
     }
 

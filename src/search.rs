@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::error::UrlError;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -105,7 +106,7 @@ impl SearchQuery {
     /// # Errors
     ///
     /// Returns an error if query parameters cannot be appended.
-    pub fn into_url(&self, mut url: Url) -> Result<Url, url::ParseError> {
+    pub fn into_url(&self, mut url: Url) -> Result<Url, UrlError> {
         {
             let mut query_pairs = url.query_pairs_mut();
             query_pairs

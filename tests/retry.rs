@@ -6,10 +6,11 @@ use std::time::Duration;
 
 use axum::http::{Method, StatusCode};
 use internetarchive_rs::{
-    InternetArchiveClient, InternetArchiveError, ItemIdentifier, RetryOptions, UploadOptions,
-    UploadSpec,
+    Endpoint, InternetArchiveClient, InternetArchiveError, ItemIdentifier, RetryOptions,
+    UploadOptions, UploadSpec,
 };
 use mock_support::{MockInternetArchiveServer, QueuedResponse};
+use url::Url;
 
 fn fast_retry(server: &MockInternetArchiveServer, max_retries: u32) -> InternetArchiveClient {
     server
@@ -251,4 +252,34 @@ async fn upload_with_progress_retries_on_service_unavailable() {
         .unwrap();
 
     assert_eq!(count(&server, &Method::PUT, "/s3/demo-item/demo.txt"), 2);
+}
+
+/// A refused connection must stay classifiable through the owned transport error,
+/// which is what lets a caller decide to retry without naming the HTTP client's type.
+#[tokio::test]
+async fn transport_errors_stay_classifiable_by_consumers() {
+    let unused_port = Url::parse("http://127.0.0.1:1/").expect("valid url");
+    let client = InternetArchiveClient::builder()
+        .endpoint(Endpoint::custom(unused_port.clone(), unused_port))
+        .retry_options(RetryOptions {
+            max_retries: 0,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+        })
+        .build()
+        .expect("build client");
+    let identifier = ItemIdentifier::new("demo-item").expect("valid identifier");
+
+    let error = client.get_item(&identifier).await.expect_err("refused");
+
+    match error {
+        InternetArchiveError::Transport(transport) => {
+            assert!(
+                transport.is_connect(),
+                "expected a connect failure: {transport}"
+            );
+            assert!(!transport.is_timeout());
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }

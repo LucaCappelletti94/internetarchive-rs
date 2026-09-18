@@ -1,5 +1,6 @@
 //! Endpoint configuration for archive.org and custom test deployments.
 
+use crate::error::UrlError;
 use url::Url;
 
 /// Endpoint roots used by the client.
@@ -40,7 +41,7 @@ impl Endpoint {
     ///
     /// Returns an error if the configured base URL cannot accept the path
     /// segments.
-    pub fn metadata_url(&self, identifier: &str) -> Result<Url, url::ParseError> {
+    pub fn metadata_url(&self, identifier: &str) -> Result<Url, UrlError> {
         Ok(join_segments(
             self.archive_base.clone(),
             &["metadata", identifier],
@@ -52,8 +53,10 @@ impl Endpoint {
     /// # Errors
     ///
     /// Returns an error if the configured base URL cannot accept the path.
-    pub fn search_url(&self) -> Result<Url, url::ParseError> {
-        self.archive_base.join("advancedsearch.php")
+    pub fn search_url(&self) -> Result<Url, UrlError> {
+        self.archive_base
+            .join("advancedsearch.php")
+            .map_err(UrlError::new)
     }
 
     /// Returns the catalog tasks endpoint URL.
@@ -61,8 +64,10 @@ impl Endpoint {
     /// # Errors
     ///
     /// Returns an error if the configured base URL cannot accept the path.
-    pub fn tasks_url(&self) -> Result<Url, url::ParseError> {
-        self.archive_base.join("services/tasks.php")
+    pub fn tasks_url(&self) -> Result<Url, UrlError> {
+        self.archive_base
+            .join("services/tasks.php")
+            .map_err(UrlError::new)
     }
 
     /// Returns the details page URL for an item.
@@ -71,7 +76,7 @@ impl Endpoint {
     ///
     /// Returns an error if the configured base URL cannot accept the path
     /// segments.
-    pub fn details_url(&self, identifier: &str) -> Result<Url, url::ParseError> {
+    pub fn details_url(&self, identifier: &str) -> Result<Url, UrlError> {
         Ok(join_segments(
             self.archive_base.clone(),
             &["details", identifier],
@@ -84,7 +89,7 @@ impl Endpoint {
     ///
     /// Returns an error if the configured base URL cannot accept the path
     /// segments.
-    pub fn download_url(&self, identifier: &str, filename: &str) -> Result<Url, url::ParseError> {
+    pub fn download_url(&self, identifier: &str, filename: &str) -> Result<Url, UrlError> {
         Ok(join_segments(
             self.archive_base.clone(),
             &["download", identifier, filename],
@@ -97,7 +102,7 @@ impl Endpoint {
     ///
     /// Returns an error if the configured base URL cannot accept the path
     /// segments.
-    pub fn s3_item_url(&self, identifier: &str) -> Result<Url, url::ParseError> {
+    pub fn s3_item_url(&self, identifier: &str) -> Result<Url, UrlError> {
         Ok(join_segments(self.s3_base.clone(), &[identifier]))
     }
 
@@ -107,7 +112,7 @@ impl Endpoint {
     ///
     /// Returns an error if the configured base URL cannot accept the path
     /// segments.
-    pub fn s3_object_url(&self, identifier: &str, filename: &str) -> Result<Url, url::ParseError> {
+    pub fn s3_object_url(&self, identifier: &str, filename: &str) -> Result<Url, UrlError> {
         Ok(join_segments(self.s3_base.clone(), &[identifier, filename]))
     }
 
@@ -117,11 +122,7 @@ impl Endpoint {
     ///
     /// Returns an error if the configured base URL cannot accept query
     /// parameters.
-    pub fn s3_limit_check_url(
-        &self,
-        access_key: &str,
-        identifier: &str,
-    ) -> Result<Url, url::ParseError> {
+    pub fn s3_limit_check_url(&self, access_key: &str, identifier: &str) -> Result<Url, UrlError> {
         let mut url = self.s3_base.clone();
         url.query_pairs_mut()
             .append_pair("check_limit", "1")
