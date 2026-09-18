@@ -49,6 +49,9 @@ pub(crate) fn is_retryable_status(status: HttpStatus) -> bool {
 }
 
 /// Returns whether a transfer error is transient and worth retrying.
+///
+/// A resolution failure reports as a connection failure, so it is already
+/// covered and needs no clause of its own.
 pub(crate) fn is_retryable_transfer_error(error: &InternetArchiveError) -> bool {
     match error {
         InternetArchiveError::Transport(source) => {

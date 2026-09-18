@@ -285,3 +285,39 @@ async fn transport_errors_stay_classifiable_by_consumers() {
         other => panic!("unexpected error: {other:?}"),
     }
 }
+
+/// The retry classifier treats an unresolvable host as retryable through the
+/// connection predicate, so a resolution failure must keep reporting as both.
+#[tokio::test]
+async fn dns_failures_report_as_resolution_and_connection_failures() {
+    let unresolvable = Url::parse("http://does-not-resolve-9f3a2b7c.invalid/").expect("valid url");
+    let client = InternetArchiveClient::builder()
+        .endpoint(Endpoint::custom(unresolvable.clone(), unresolvable))
+        .retry_options(RetryOptions {
+            max_retries: 0,
+            initial_backoff: Duration::from_millis(1),
+            max_backoff: Duration::from_millis(1),
+        })
+        .build()
+        .expect("build client");
+    let identifier = ItemIdentifier::new("demo-item").expect("valid identifier");
+
+    let error = client
+        .get_item(&identifier)
+        .await
+        .expect_err("unresolvable");
+
+    match error {
+        InternetArchiveError::Transport(transport) => {
+            assert!(
+                transport.is_dns(),
+                "expected a resolution failure: {transport}"
+            );
+            assert!(
+                transport.is_connect(),
+                "resolution failures must stay retryable: {transport}"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
