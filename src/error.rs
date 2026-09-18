@@ -63,9 +63,6 @@ pub enum InternetArchiveError {
     /// JSON encoding or decoding failed.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    /// XML decoding failed.
-    #[error(transparent)]
-    Xml(#[from] quick_xml::DeError),
     /// Local I/O failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),

@@ -123,7 +123,7 @@ General item identifiers follow the official [Internet Archive metadata schema](
 Enable the optional `indicatif` feature if you want upload and download helpers that update a progress bar:
 
 ```toml
-internetarchive-rs = { version = "0.4", features = ["indicatif"] }
+internetarchive-rs = { version = "0.5", features = ["indicatif"] }
 ```
 
 The crate re-exports `indicatif` when that feature is enabled, so you can use `internetarchive_rs::indicatif::ProgressBar` without adding a separate direct dependency.
