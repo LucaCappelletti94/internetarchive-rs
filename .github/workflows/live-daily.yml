@@ -9,8 +9,10 @@ on:
 permissions:
   contents: read
 
+# Keyed per ref so the release workflow's live gate never queues behind the nightly
+# run, where a third entrant would cancel it and fail the release.
 concurrency:
-  group: internetarchive-live-daily
+  group: internetarchive-live-daily-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

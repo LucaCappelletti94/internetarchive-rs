@@ -2,8 +2,9 @@
 
 mod cleanup_support;
 
+use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Once;
+use std::sync::{LazyLock, Once};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use internetarchive_rs::{
@@ -15,6 +16,19 @@ use internetarchive_rs::{
 use tempfile::tempdir;
 
 static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Keeps a release gate and an overlapping nightly run from choosing the same identifier.
+static RUN_NONCE: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("GITHUB_RUN_ID")
+        .ok()
+        .and_then(|id| id.parse().ok())
+        .unwrap_or_else(|| {
+            std::collections::hash_map::RandomState::new()
+                .build_hasher()
+                .finish()
+        })
+});
+
 const MAX_LIVE_LABEL_LEN: usize = 12;
 const LIVE_TEST_COLLECTION: &str = "test_collection";
 const LIVE_IDENTIFIER_PREFIX: &str = "internetarchivers";
@@ -47,12 +61,18 @@ fn normalize_live_label(label: &str) -> String {
     }
 }
 
-fn live_identifier_from_parts(label: &str, timestamp_seconds: u64, counter: u64) -> ItemIdentifier {
+fn live_identifier_from_parts(
+    label: &str,
+    timestamp_seconds: u64,
+    counter: u64,
+    run_nonce: u64,
+) -> ItemIdentifier {
     let label = normalize_live_label(label);
     let timestamp = fixed_width_decimal(timestamp_seconds, 10_000_000_000, 10);
     let counter_index = fixed_width_decimal(counter, 10_000, 4);
+    let nonce = fixed_width_decimal(run_nonce, 1_000_000, 6);
 
-    let identifier = format!("{LIVE_IDENTIFIER_PREFIX}{label}{timestamp}{counter_index}");
+    let identifier = format!("{LIVE_IDENTIFIER_PREFIX}{label}{timestamp}{counter_index}{nonce}");
     assert!(
         identifier.len() <= ItemIdentifier::MAX_BUCKET_IDENTIFIER_LEN,
         "generated live identifier is too long: {identifier}"
@@ -70,7 +90,7 @@ fn unique_identifier(label: &str) -> ItemIdentifier {
         .expect("system time after epoch")
         .as_secs();
     let counter = UNIQUE_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
-    live_identifier_from_parts(label, timestamp, counter)
+    live_identifier_from_parts(label, timestamp, counter, *RUN_NONCE)
 }
 
 fn load_dotenv_once() {
@@ -145,8 +165,12 @@ impl Drop for LiveItemGuard {
 
 #[test]
 fn generated_live_identifiers_are_bucket_safe() {
-    let identifier =
-        live_identifier_from_parts("live_workflow_with_a_long_label", u64::MAX, u64::MAX);
+    let identifier = live_identifier_from_parts(
+        "live_workflow_with_a_long_label",
+        u64::MAX,
+        u64::MAX,
+        u64::MAX,
+    );
     let raw = identifier.as_str();
 
     assert!(
@@ -161,6 +185,15 @@ fn generated_live_identifiers_are_bucket_safe() {
     identifier
         .validate_for_bucket_creation()
         .expect("bucket-safe live ID");
+}
+
+/// A release gate runs the suite while the nightly schedule may already be running.
+#[test]
+fn identifiers_differ_across_concurrent_runs() {
+    let first = live_identifier_from_parts("upload", 1_764_000_000, 3, 41);
+    let second = live_identifier_from_parts("upload", 1_764_000_000, 3, 42);
+
+    assert_ne!(first.as_str(), second.as_str());
 }
 
 /// Internet Archive applies writes through an asynchronous catalog task queue and
