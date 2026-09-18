@@ -91,6 +91,36 @@ jobs:
       - name: Check crate with MSRV
         run: cargo +1.86.0 check --no-default-features --features rustls-ring-tls,indicatif --locked
 
+  minimal-versions:
+    name: Minimal Versions
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install nightly toolchain
+        uses: dtolnay/rust-toolchain@nightly
+
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.86.0
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # A --locked gate only ever sees the graph the lockfile pins, so a requirement
+      # below what the code needs stays invisible until a consumer resolves it.
+      - name: Resolve dependencies at their declared floors
+        run: cargo +nightly -Z direct-minimal-versions generate-lockfile
+
+      - name: Check the floors compile
+        run: |
+          cargo +1.86.0 check --locked --no-default-features --features rustls-ring-tls,indicatif
+          cargo +1.86.0 check --locked --no-default-features --features native-tls
+          cargo +1.86.0 check --locked
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
