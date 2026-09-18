@@ -61,7 +61,7 @@ pub mod workflow;
 pub use client::{Auth, InternetArchiveClient, InternetArchiveClientBuilder};
 pub use downloads::{DownloadTarget, ResolvedDownload};
 pub use endpoint::Endpoint;
-pub use error::InternetArchiveError;
+pub use error::{InternetArchiveError, JsonError, TransportError, UrlError};
 pub use ids::{IdentifierError, ItemIdentifier, TaskId};
 #[cfg(feature = "indicatif")]
 pub use indicatif;
