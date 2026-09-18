@@ -158,6 +158,11 @@ jobs:
       - name: Verify publish package
         run: cargo publish --dry-run --locked
 
+      # The unpacked crate is scratch, and caching it walks rust-cache into a source
+      # directory named tests, which annotates the run (Swatinem/rust-cache#193).
+      - name: Discard the unpacked package tree
+        run: rm -rf target/package
+
   audit:
     name: Audit
     runs-on: ubuntu-latest
