@@ -1,13 +1,13 @@
 # Live API CI
 
-This repository has two CI layers:
+This repository has two CI layers.
 
 - regular push and pull request checks in [`.github/workflows/ci.yml`](../.github/workflows/ci.yml)
-- a scheduled live workflow in [`.github/workflows/live-daily.yml`](../.github/workflows/live-daily.yml)
+- scheduled checks in [`.github/workflows/scheduled-checks.yml`](../.github/workflows/scheduled-checks.yml)
 
-The scheduled workflow runs the live tests in [`tests/live_smoke.rs`](../tests/live_smoke.rs).
+Daily checks run at 04:17 UTC, with live tests on the first of each month and the full suite on manual and release runs.
 
-Each daily run now exercises the full public client workflow surface against the real Internet Archive APIs:
+The live suite runs [`tests/live_smoke.rs`](../tests/live_smoke.rs) against the real Internet Archive APIs.
 
 - client construction through `new`, `with_auth`, `from_env`, and `builder`
 - item creation through `create_item`
