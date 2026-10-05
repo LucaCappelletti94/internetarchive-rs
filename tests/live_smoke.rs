@@ -17,7 +17,7 @@ use tempfile::tempdir;
 
 static UNIQUE_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Keeps a release gate and an overlapping nightly run from choosing the same identifier.
+/// Keeps concurrent live runs from choosing the same identifier.
 static RUN_NONCE: LazyLock<u64> = LazyLock::new(|| {
     std::env::var("GITHUB_RUN_ID")
         .ok()
@@ -187,7 +187,6 @@ fn generated_live_identifiers_are_bucket_safe() {
         .expect("bucket-safe live ID");
 }
 
-/// A release gate runs the suite while the nightly schedule may already be running.
 #[test]
 fn identifiers_differ_across_concurrent_runs() {
     let first = live_identifier_from_parts("upload", 1_764_000_000, 3, 41);

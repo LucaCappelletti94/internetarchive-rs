@@ -18,12 +18,11 @@ jobs:
       id-token: write
     uses: ./.github/workflows/ci.yml
 
-  # Re-run the daily suite (feature matrix, advisories, and the live archive.org
-  # API tests) against the tagged commit. Needs the live credentials.
+  # Run the full scheduled suite against the tagged commit with live credentials.
   live:
     name: Live gate
     secrets: inherit
-    uses: ./.github/workflows/live-daily.yml
+    uses: ./.github/workflows/scheduled-checks.yml
 
   publish:
     name: Publish to crates.io
