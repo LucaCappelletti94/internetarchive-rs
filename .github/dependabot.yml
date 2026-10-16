@@ -16,8 +16,3 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
-    ignore:
-      # Each reference is a branch head pinned by digest, where the branch selects the
-      # action variant. The only tag is v1, so an offer would swap the variant, and
-      # these pins are refreshed by hand instead.
-      - dependency-name: dtolnay/rust-toolchain
