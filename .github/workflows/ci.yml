@@ -34,7 +34,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update --component rustfmt && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Check formatting
         run: cargo fmt --all --check
@@ -67,7 +67,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build docs
         env:
@@ -86,7 +86,7 @@ jobs:
         run: rustup toolchain install 1.86.0 --profile minimal --no-self-update && rustup default 1.86.0
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Check crate with MSRV
         run: cargo +1.86.0 check --no-default-features --features rustls-ring-tls,indicatif --locked
@@ -106,7 +106,7 @@ jobs:
         run: rustup toolchain install 1.86.0 --profile minimal --no-self-update && rustup default 1.86.0
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # A --locked gate only ever sees the graph the lockfile pins, so a requirement
       # below what the code needs stays invisible until a consumer resolves it.
@@ -131,7 +131,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update --component clippy && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Run clippy
         run: cargo clippy --all-targets --no-default-features --features rustls-ring-tls,indicatif --locked -- -D warnings
@@ -162,7 +162,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Run tests
         run: ${{ matrix.command }}
@@ -179,7 +179,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Verify publish package
         run: cargo publish --dry-run --locked
@@ -201,7 +201,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install cargo-audit
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
@@ -223,7 +223,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
@@ -248,7 +248,7 @@ jobs:
         run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install cargo-tarpaulin
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2.87.26
