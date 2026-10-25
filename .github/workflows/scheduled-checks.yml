@@ -22,7 +22,7 @@ concurrency:
 jobs:
   advisories:
     name: Advisories
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
 
     steps:
       - name: Checkout
@@ -52,7 +52,7 @@ jobs:
 
   feature-matrix:
     name: Feature Matrix (${{ matrix.name }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +84,7 @@ jobs:
   live-api-suite:
     name: Live Full API Suite
     if: ${{ github.event_name != 'schedule' || github.event.schedule == '17 4 1 * *' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     needs: feature-matrix
     timeout-minutes: 120
     environment: internetarchive-live

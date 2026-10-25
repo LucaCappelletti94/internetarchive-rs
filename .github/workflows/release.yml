@@ -31,7 +31,7 @@ jobs:
   publish:
     name: Publish to crates.io
     needs: [ci, live]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     environment: crates-io
     permissions:
       contents: read
